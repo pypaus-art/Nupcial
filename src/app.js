@@ -16,6 +16,8 @@ import { icon } from "./icons.js";
 import { board, boardContents } from "./garden-view.js";
 import {
   WORLD,
+  WORLD_AREA,
+  fitArea,
   TABLE_GRID,
   snapTable,
   KINDS,
@@ -345,6 +347,7 @@ function render() {
     backup: backupPage,
     garden: gardenPage,
   }[route]();
+  mountMapViewport();
   progressFeedback(previousProgress, main);
   tick();
 }
@@ -431,6 +434,7 @@ function tasksPage() {
       `${done} de ${state.tasks.length} terminadas`,
       button("new-tasks", "Agregar tarea"),
     ) +
+    progressBar("Tareas terminadas", done, state.tasks.length) +
     filters([
       ["all", "Todas"],
       ["pending", "Pendientes"],
@@ -629,18 +633,64 @@ function editorControls() {
     : `<strong>${esc(KINDS[e.kind].label)}</strong>`;
   return `<div class="editor-control-row"><div class="editor-selection">${name}<small id="garden-dimensions">${e.width} × ${e.height} px</small></div>${button("garden-rotate", "Girar elemento 90 grados", "rotate")}${button("garden-shrink", "Reducir elemento un píxel", "minus")}${button("garden-grow", "Aumentar elemento un píxel", "plus")}${button("garden-delete", "Quitar elemento", "trash")}${button("garden-deselect", "Terminar edición del elemento", "check")}</div>`;
 }
+let mapArea = WORLD_AREA,
+  mapAreaKey = "",
+  mapResizeObserver;
+function fitMapViewport() {
+  const svg = $("#map-canvas");
+  if (!svg || !["map", "garden"].includes(route)) return;
+  const rect = svg.getBoundingClientRect();
+  if (!rect.width || !rect.height) return;
+  const garden = route === "garden" ? gardenDraft : state.garden;
+  const next = fitArea(
+    [...state.tables, ...(garden?.elements || [])],
+    rect.width,
+    rect.height,
+  );
+  const key = `${route}:${rect.width}:${rect.height}`;
+  if (key !== mapAreaKey || next.width > mapArea.width + 0.001) mapArea = next;
+  mapAreaKey = key;
+  if (route === "garden") applyGardenCamera();
+  else
+    svg.setAttribute(
+      "viewBox",
+      `${mapArea.left} ${mapArea.top} ${mapArea.width} ${mapArea.height}`,
+    );
+  const grid = svg.querySelector(".table-grid");
+  if (grid)
+    for (const [key, value] of Object.entries({
+      x: mapArea.left,
+      y: mapArea.top,
+      width: mapArea.width,
+      height: mapArea.height,
+    }))
+      grid.setAttribute(key, value);
+}
+function mountMapViewport() {
+  mapResizeObserver?.disconnect();
+  const svg = $("#map-canvas");
+  if (!svg) {
+    mapAreaKey = "";
+    return;
+  }
+  fitMapViewport();
+  mapResizeObserver = new ResizeObserver(() => {
+    if (!drag) fitMapViewport();
+  });
+  mapResizeObserver.observe(svg);
+}
 function applyGardenCamera() {
   const svg = $("#map-canvas");
   if (!svg || route !== "garden") return;
-  const w = WORLD.width / gardenCamera.zoom,
-    h = WORLD.height / gardenCamera.zoom;
+  const w = mapArea.width / gardenCamera.zoom,
+    h = mapArea.height / gardenCamera.zoom;
   gardenCamera.x = Math.max(
-    w / 2,
-    Math.min(WORLD.width - w / 2, gardenCamera.x),
+    mapArea.left + w / 2,
+    Math.min(mapArea.left + mapArea.width - w / 2, gardenCamera.x),
   );
   gardenCamera.y = Math.max(
-    h / 2,
-    Math.min(WORLD.height - h / 2, gardenCamera.y),
+    mapArea.top + h / 2,
+    Math.min(mapArea.top + mapArea.height - h / 2, gardenCamera.y),
   );
   svg.setAttribute(
     "viewBox",
@@ -660,7 +710,7 @@ function refreshGarden({ controls = true } = {}) {
     showTables: false,
   });
   if (controls) $("#garden-controls").innerHTML = editorControls();
-  applyGardenCamera();
+  fitMapViewport();
   updateDirty();
 }
 function gardenPage() {
@@ -698,6 +748,7 @@ function selectTable(tableId) {
       editing,
       selected: selectedTable,
     });
+  fitMapViewport();
   if (different) tone("select");
 }
 function transformTable({ rotationDelta = 0, delta = 0 }) {
@@ -714,7 +765,7 @@ function transformTable({ rotationDelta = 0, delta = 0 }) {
         height: Math.round((width * 9) / 16),
         rotation: (t.rotation + rotationDelta) % 360,
       };
-      Object.assign(value, clampPosition(value, value.x, value.y));
+      Object.assign(value, clampPosition(value, value.x, value.y, mapArea));
       await change(
         { type: "save", collection: "tables", value },
         { close: false },
@@ -736,7 +787,7 @@ function resizeObject(width) {
     12,
     Math.round((e.width * KINDS[e.kind].height) / KINDS[e.kind].width),
   );
-  Object.assign(e, clampPosition(e, e.x, e.y));
+  Object.assign(e, clampPosition(e, e.x, e.y, mapArea));
   refreshGarden();
   saveGarden();
 }
@@ -878,7 +929,10 @@ async function gardenAction(action, el) {
   if (!selected) return;
   if (action === "garden-rotate") {
     selected.rotation = (selected.rotation + 90) % 360;
-    Object.assign(selected, clampPosition(selected, selected.x, selected.y));
+    Object.assign(
+      selected,
+      clampPosition(selected, selected.x, selected.y, mapArea),
+    );
   } else if (action === "garden-delete") {
     gardenDraft.elements = gardenDraft.elements.filter(
       (e) => e.id !== selected.id,
@@ -1695,7 +1749,7 @@ document.addEventListener("click", async (e) => {
         ...t,
         capacity: t.capacity + (action === "capacity-up" ? 1 : -1),
       };
-      Object.assign(value, clampPosition(value, value.x, value.y));
+      Object.assign(value, clampPosition(value, value.x, value.y, mapArea));
       return { type: "save", collection: "tables", value };
     });
   } else if (action === "unassigned-list") tableSearch(true);
@@ -1824,6 +1878,7 @@ document.addEventListener("pointerdown", (e) => {
     active: false,
     revision: state.revision,
     camera: { ...gardenCamera },
+    area: { ...mapArea },
   };
   svg.setPointerCapture(e.pointerId);
   e.preventDefault();
@@ -1847,10 +1902,16 @@ document.addEventListener("pointermove", (e) => {
     drag.item,
     drag.item.x + point.x - drag.start.x,
     drag.item.y + point.y - drag.start.y,
+    drag.area,
   );
   const free =
     drag.isObject ||
-    tableSpaceFree({ ...drag.item, ...position }, state.tables);
+    tableSpaceFree(
+      { ...drag.item, ...position },
+      state.tables,
+      null,
+      drag.area,
+    );
   drag.el.classList.toggle("drag-blocked", !free);
   if (!free) return;
   drag.next = position;
@@ -1924,6 +1985,7 @@ document.addEventListener("keydown", async (e) => {
     item.x +
       (e.key === "ArrowRight" ? step : e.key === "ArrowLeft" ? -step : 0),
     item.y + (e.key === "ArrowDown" ? step : e.key === "ArrowUp" ? -step : 0),
+    mapArea,
   );
   if (isObject) {
     Object.assign(item, position);

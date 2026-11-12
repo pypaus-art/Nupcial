@@ -14,9 +14,9 @@ const short = (s, max) =>
         .join("") + "…"
     : s;
 const symbols = `<defs>
-<symbol id="garden-tree" viewBox="8 5 91 89" preserveAspectRatio="none"><path d="M48 93V65m0 12-14-12m14 9 17-13" fill="none"/><path d="M20 57C-3 43 13 13 34 18 40-2 74 5 73 23c29 1 31 31 13 42-1 26-40 27-44 10-20 12-40-4-22-18Z"/></symbol>
-<symbol id="garden-bush" viewBox="2 15 99 71" preserveAspectRatio="none"><path d="M12 78C-5 65 4 41 23 43 13 20 43 6 56 24c23-15 39 6 30 25 22 10 15 37-6 36H29Z"/><path d="m26 61 9 9m32-19-7 12m-11-21v12" fill="none"/></symbol>
-<symbol id="garden-grass" viewBox="16 26 60 52" preserveAspectRatio="none"><path d="m17 30 6 13 7-16m32 3 6 13 7-16M41 64l6 13 7-16" fill="none"/></symbol>
+<symbol id="garden-tree" viewBox="0 0 100 100"><path d="M48 93V65m0 12-14-12m14 9 17-13" fill="none"/><path d="M20 57C-3 43 13 13 34 18 40-2 74 5 73 23c29 1 31 31 13 42-1 26-40 27-44 10-20 12-40-4-22-18Z"/></symbol>
+<symbol id="garden-bush" viewBox="0 0 100 100"><path d="M12 78C-5 65 4 41 23 43 13 20 43 6 56 24c23-15 39 6 30 25 22 10 15 37-6 36H29Z"/><path d="m26 61 9 9m32-19-7 12m-11-21v12" fill="none"/></symbol>
+<symbol id="garden-grass" viewBox="0 0 100 100"><path d="m17 30 6 13 7-16m32 3 6 13 7-16M41 64l6 13 7-16" fill="none"/></symbol>
 </defs>`;
 export const defaultGarden = () => [
   {
@@ -125,5 +125,5 @@ export function boardContents(
   );
 }
 export function board(state, options = {}) {
-  return `<svg id="map-canvas" class="map-surface ${options.editor ? "garden-design-surface" : ""}" viewBox="0 0 ${WORLD.width} ${WORLD.height}" preserveAspectRatio="none" role="group" aria-label="${options.editor ? "Lienzo de diseño del jardín" : "Mesas y orientación del jardín"}">${boardContents(state, options)}</svg>`;
+  return `<svg id="map-canvas" class="map-surface ${options.editor ? "garden-design-surface" : ""}" viewBox="0 0 ${WORLD.width} ${WORLD.height}" preserveAspectRatio="xMidYMid meet" role="group" aria-label="${options.editor ? "Lienzo de diseño del jardín" : "Mesas y orientación del jardín"}">${boardContents(state, options)}</svg>`;
 }

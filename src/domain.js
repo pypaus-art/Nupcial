@@ -1,5 +1,6 @@
 import {
   WORLD,
+  STORAGE_AREA,
   KINDS,
   tableDefaults,
   legacyTable,
@@ -201,7 +202,7 @@ export function validate(s) {
           t.height >= 24 &&
           t.height <= 80 &&
           [0, 90, 180, 270].includes(t.rotation) &&
-          inside(t),
+          inside(t, STORAGE_AREA),
         "Mesa inválida: revisa tamaño, giro y límites del jardín.",
       );
   }
@@ -240,7 +241,7 @@ export function validate(s) {
           e.height <= 240 &&
           [0, 90, 180, 270].includes(e.rotation) &&
           text(e.label, 60) &&
-          inside(e),
+          inside(e, STORAGE_AREA),
         "Elemento de jardín inválido: revisa sus límites, tamaño y tipo.",
       );
     }

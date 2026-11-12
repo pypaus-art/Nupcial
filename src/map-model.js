@@ -54,43 +54,95 @@ export function edgeInsets(item) {
     };
   return edges;
 }
-export function inside(item) {
-  const b = bounds(item),
-    e = edgeInsets(item);
+export const WORLD_AREA = Object.freeze({ left: 0, top: 0, ...WORLD });
+// Rendering can expose space beyond the original frame without changing saved coordinates.
+export const STORAGE_AREA = Object.freeze({
+  left: -100000,
+  top: -100000,
+  width: 200360,
+  height: 200640,
+});
+const ART_BOUNDS = Object.freeze({
+  tree: { x: 7.974, y: 5.152, w: 90.354, h: 88.598 },
+  bush: { x: 2.247, y: 15.046, w: 97.991, h: 70.731 },
+  grass: { x: 16, y: 26, w: 60, h: 52 },
+});
+export function footprint(item) {
+  const art = ART_BOUNDS[item.kind];
+  if (!art) {
+    const b = bounds(item),
+      e = edgeInsets(item);
+    return {
+      x: b.x + (e.right - e.left) / 2,
+      y: b.y + (e.bottom - e.top) / 2,
+      w: b.w + e.left + e.right,
+      h: b.h + e.top + e.bottom,
+    };
+  }
+  const scale = Math.min(item.width, item.height) / 100;
+  let dx = (art.x + art.w / 2 - 50) * scale,
+    dy = (art.y + art.h / 2 - 50) * scale;
+  let w = art.w * scale,
+    h = art.h * scale;
+  for (let turn = 0; turn < (item.rotation || 0) / 90; turn++) {
+    [dx, dy] = [-dy, dx];
+    [w, h] = [h, w];
+  }
+  return { x: item.x + dx, y: item.y + dy, w, h };
+}
+export function inside(item, area = WORLD_AREA) {
+  const b = footprint(item);
   return (
-    b.x - b.w / 2 >= e.left &&
-    b.x + b.w / 2 <= WORLD.width - e.right &&
-    b.y - b.h / 2 >= e.top &&
-    b.y + b.h / 2 <= WORLD.height - e.bottom
+    b.x - b.w / 2 >= area.left &&
+    b.x + b.w / 2 <= area.left + area.width &&
+    b.y - b.h / 2 >= area.top &&
+    b.y + b.h / 2 <= area.top + area.height
   );
 }
-export function clampPosition(item, x, y) {
-  const b = bounds(item),
-    e = edgeInsets(item);
+export function clampPosition(item, x, y, area = WORLD_AREA) {
+  const b = footprint(item),
+    dx = b.x - item.x,
+    dy = b.y - item.y;
   return {
     x: Math.round(
       Math.max(
-        Math.ceil(b.w / 2 + e.left),
-        Math.min(Math.floor(WORLD.width - b.w / 2 - e.right), x),
+        Math.ceil(area.left + b.w / 2 - dx),
+        Math.min(Math.floor(area.left + area.width - b.w / 2 - dx), x),
       ),
     ),
     y: Math.round(
       Math.max(
-        Math.ceil(b.h / 2 + e.top),
-        Math.min(Math.floor(WORLD.height - b.h / 2 - e.bottom), y),
+        Math.ceil(area.top + b.h / 2 - dy),
+        Math.min(Math.floor(area.top + area.height - b.h / 2 - dy), y),
       ),
     ),
   };
 }
-export function snapTable(item, x, y) {
+export function fitArea(items, pixelWidth, pixelHeight) {
+  const cx = WORLD.width / 2,
+    cy = WORLD.height / 2;
+  let width = WORLD.width,
+    height = WORLD.height;
+  for (const item of items) {
+    const b = footprint(item);
+    width = Math.max(width, 2 * (Math.abs(b.x - cx) + b.w / 2));
+    height = Math.max(height, 2 * (Math.abs(b.y - cy) + b.h / 2));
+  }
+  const aspect = pixelWidth / pixelHeight;
+  if (width / height < aspect) width = height * aspect;
+  else height = width / aspect;
+  return { left: cx - width / 2, top: cy - height / 2, width, height };
+}
+export function snapTable(item, x, y, area = WORLD_AREA) {
   return clampPosition(
     item,
     Math.round(x / TABLE_GRID) * TABLE_GRID,
     Math.round(y / TABLE_GRID) * TABLE_GRID,
+    area,
   );
 }
-export function tableSpaceFree(candidate, tables, garden) {
-  if (!inside(candidate)) return false;
+export function tableSpaceFree(candidate, tables, garden, area = STORAGE_AREA) {
+  if (!inside(candidate, area)) return false;
   if (
     tables.some(
       (t) =>
@@ -104,7 +156,7 @@ export function findTableSpace(tables, garden) {
   for (let y = 104; y < 610; y += TABLE_GRID)
     for (let x = 40; x < 340; x += TABLE_GRID) {
       const t = tableDefaults({ id: "candidate", x, y });
-      if (tableSpaceFree(t, tables, garden)) return t;
+      if (tableSpaceFree(t, tables, garden, WORLD_AREA)) return t;
     }
   return null;
 }
