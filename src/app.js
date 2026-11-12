@@ -34,7 +34,8 @@ let state,
   query = "",
   selectedGuest = null,
   dialogRevision = 0,
-  installPrompt;
+  installPrompt,
+  nextRouteFilter = null;
 const dialog = $("#dialog"),
   main = $("#main");
 const channel =
@@ -138,6 +139,76 @@ function nav() {
     )
     .join("");
 }
+let pointerNavigation = false;
+let inkSequence = 0;
+let inkViewTransition;
+let inkAnimation;
+document.addEventListener(
+  "pointerdown",
+  () => {
+    pointerNavigation = true;
+  },
+  { capture: true },
+);
+document.addEventListener(
+  "keydown",
+  () => {
+    pointerNavigation = false;
+  },
+  { capture: true },
+);
+function inkTransition(paint) {
+  const sequence = ++inkSequence;
+  inkViewTransition?.skipTransition();
+  inkAnimation?.cancel();
+  const animate =
+    pointerNavigation &&
+    main.dataset.route &&
+    !matchMedia("(prefers-reduced-motion: reduce)").matches &&
+    !document.hidden;
+  pointerNavigation = false;
+  if (!animate) {
+    delete document.documentElement.dataset.ink;
+    paint();
+    return;
+  }
+  document.documentElement.dataset.ink = "refreshing";
+  const finish = () => {
+    if (sequence === inkSequence) delete document.documentElement.dataset.ink;
+  };
+  if (document.startViewTransition) {
+    inkViewTransition = document.startViewTransition(() => {
+      if (sequence === inkSequence) paint();
+    });
+    inkViewTransition.finished.catch(() => {}).finally(finish);
+  } else if (main.animate) {
+    inkAnimation = main.animate(
+      [
+        { opacity: 1, filter: "blur(0px)" },
+        { opacity: 0, filter: "blur(.6px)" },
+      ],
+      { duration: 65, easing: "cubic-bezier(.23,1,.32,1)", fill: "none" },
+    );
+    inkAnimation.finished
+      .then(() => {
+        if (sequence !== inkSequence) return;
+        paint();
+        inkAnimation = main.animate(
+          [
+            { opacity: 0, filter: "blur(.6px)" },
+            { opacity: 1, filter: "blur(0px)" },
+          ],
+          { duration: 140, easing: "cubic-bezier(.23,1,.32,1)", fill: "none" },
+        );
+        return inkAnimation.finished;
+      })
+      .catch(() => {})
+      .finally(finish);
+  } else {
+    paint();
+    finish();
+  }
+}
 function routeTo() {
   const next = location.hash.slice(1) || "home";
   route = [
@@ -157,15 +228,29 @@ function routeTo() {
     : "home";
   editing = false;
   query = "";
-  filter = "all";
+  filter = nextRouteFilter || "all";
+  nextRouteFilter = null;
   if (dialog.open) dialog.close();
-  render();
-  window.scrollTo(0, 0);
+  inkTransition(() => {
+    render();
+    window.scrollTo(0, 0);
+  });
 }
 function render() {
   if (!state) return;
   nav();
-  main.className = route === "map" ? "map-page" : "";
+  $("#header-date").textContent = new Intl.DateTimeFormat("es-MX", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    timeZone: "America/Mexico_City",
+  })
+    .format(new Date(state.event.date + "T12:00:00-06:00"))
+    .replaceAll(".", "")
+    .toUpperCase();
+  main.className =
+    route === "map" ? "map-page" : route === "home" ? "home-page" : "";
+  main.dataset.route = route;
   main.innerHTML = {
     home: homePage,
     agenda: agendaPage,
@@ -181,41 +266,54 @@ function render() {
   }[route]();
   tick();
 }
+function percentage(value, total) {
+  return total > 0
+    ? Math.min(100, Math.max(0, Math.round((value / total) * 100)))
+    : 0;
+}
+function progressBar(label, value, total) {
+  const percent = percentage(value, total);
+  return `<div class="progress" role="progressbar" aria-label="${esc(label)}" aria-valuenow="${percent}" aria-valuemin="0" aria-valuemax="100" aria-valuetext="${total ? `${percent}%` : "Sin registros"}"><span style="width:${percent}%"></span></div>`;
+}
+function countSummary(key, title, actions, value, total, label) {
+  const percent = percentage(value, total);
+  return `<section class="section-summary" data-summary="${key}">${heading(title, "", actions)}<div class="summary-metric"><div class="summary-count"><strong>${value}</strong><span>/ ${total}</span></div><span class="summary-percent">${percent}%</span></div><div class="summary-bottom"><span>${label}</span>${progressBar(label, value, total)}</div></section>`;
+}
 function homePage() {
   const upcoming =
     [...state.agenda].sort(byStart).find((a) => a.status === "active") ||
     [...state.agenda].sort(byStart).find((a) => a.status !== "done");
-  const tasks = state.tasks.filter((t) => t.status !== "done"),
-    urgent = tasks.filter((t) => t.priority === "urgent");
-  const guestCount = state.guests.filter(
+  const tasks = state.tasks.filter((t) => t.status !== "done");
+  const done = state.tasks.length - tasks.length;
+  const urgent = tasks.filter((t) => t.priority === "urgent").length;
+  const confirmed = state.guests.filter(
     (g) => g.attendance === "confirmed",
   ).length;
-  const vendors = state.vendors.filter((v) => !v.refundable),
-    total = vendors.reduce((n, v) => n + v.total, 0),
-    totalPaid = vendors.reduce((n, v) => n + paid(state, v.id), 0);
-  return `<div class="greeting"><h1>Todo en su lugar.</h1><p>Tu boda, un paso a la vez.</p></div><div class="event-date"><span>${icon("calendar")}${esc(new Intl.DateTimeFormat("es-MX", { day: "numeric", month: "short", year: "numeric", timeZone: "America/Mexico_City" }).format(new Date(state.event.date + "T12:00:00-06:00")))} · ${state.event.time}</span><span>${icon("pin")}${esc(state.event.venue)}</span></div><section class="countdown" aria-label="Cuenta regresiva"><div class="countdown-top"><span id="countdown-caption">Nos vemos en el jardín</span>${icon("leaf")}</div><div id="countdown" class="countdown-values"></div></section><div class="bento"><button class="card card-wide" data-go="agenda"><div class="card-top"><span class="card-label">${upcoming?.status === "active" ? "En curso" : "Próxima actividad"}</span>${icon("arrow", "chevron")}</div>${upcoming ? `<div class="next-row"><div class="time-block">${upcoming.start}<small>${upcoming.end ? "hasta " + upcoming.end : "fin por confirmar"}</small></div><div><h3>${esc(upcoming.title)}</h3><p class="row-meta">${esc(personName(upcoming.personId))}</p></div></div>` : "<h3>Itinerario completado</h3>"}<div class="mini-rule"></div><p class="small muted">${state.agenda.length} actividades · ${state.agenda.filter((a) => a.status === "done").length} listas</p></button><button class="card" data-go="tasks"><div class="card-top">${icon("tasks")}<span class="pill">${urgent.length} ${urgent.length === 1 ? "urgente" : "urgentes"}</span></div><div class="card-number">${tasks.length}</div><p class="card-title">Pendientes</p><div class="card-foot"><span>Ver tareas</span>${icon("arrow")}</div></button><button class="card tinted" data-go="guests"><div class="card-top">${icon("users")}<span class="small muted">${state.guests.length} en lista</span></div><div class="card-number">${guestCount}</div><p class="card-title">Confirmados</p><div class="card-foot"><span>${state.assignments.length} con mesa</span>${icon("arrow")}</div></button><button class="card card-wide" data-go="vendors"><div class="card-top"><span class="card-label">Proveedores y pagos</span>${icon("wallet")}</div><div class="card-number currency">${money(total - totalPaid)}</div><div class="card-foot"><span>Por pagar · MXN</span><span>${total ? Math.round((totalPaid / total) * 100) : 0}% pagado</span></div><div class="progress" role="progressbar" aria-label="Pagos realizados" aria-valuenow="${total ? Math.round((totalPaid / total) * 100) : 0}" aria-valuemin="0" aria-valuemax="100"><span style="width:${total ? (totalPaid / total) * 100 : 0}%"></span></div>${!total ? '<p class="row-meta">Registra los acuerdos y abonos confirmados.</p>' : ""}</button></div><div class="section-head"><h2>En el jardín</h2><button data-go="map">Abrir mapa ${icon("arrow")}</button></div><button class="menu-row" data-go="map">${icon("table")}<div class="row-content">Un lugar para cada invitado<small>${state.tables.length} mesas · ${Math.max(0, guestCount - state.assignments.filter((a) => state.guests.find((g) => g.id === a.guestId)?.attendance === "confirmed").length)} confirmados sin mesa</small></div>${icon("chevron", "chevron")}</button>${operationalAlerts()}`;
-}
-function operationalAlerts() {
-  const unconfirmed = state.contingencies.filter(
-    (p) => p.status !== "confirmed",
-  ).length;
-  return `<div class="section-head"><h2>Avisos operativos</h2></div><button class="menu-row" data-go="plans">${icon("shield")}<div class="row-content">${unconfirmed} planes por confirmar<small>Lluvia, energía, comida y accesibilidad.</small></div>${icon("chevron", "chevron")}</button>${notes("Se conserva el fin de la alabanza como 16:35 / 16:40, por confirmar. Los pagos históricos no se han cargado como vigentes.")}`;
+  const settled = state.vendors.filter((v) => remaining(state, v) === 0).length;
+  const pendingVendors = state.vendors.length - settled;
+  return `<h1 class="sr-only">Inicio</h1><section class="countdown home-countdown" aria-label="Cuenta regresiva al evento"><div id="countdown" class="countdown-values"></div></section>
+  <div class="bento home-bento">
+    <button class="card home-next" data-go="agenda"><span class="tile-icon">${icon("calendar")}</span><div class="next-content"><span class="card-label">${upcoming?.status === "active" ? "En curso" : "Próxima actividad"}</span>${upcoming ? `<div class="home-time">${upcoming.start}</div><h2 class="next-title">${esc(upcoming.title)}</h2>${upcoming.personId ? `<p class="tile-detail">${esc(personName(upcoming.personId))}</p>` : ""}` : '<h2 class="next-title">Agenda completada</h2>'}</div></button>
+    <button class="card home-tasks" data-go="tasks"><span class="tile-icon">${icon("tasks")}</span><div class="tile-main"><strong class="tile-number">${String(tasks.length).padStart(2, "0")}</strong><span class="tile-label">Pendientes</span></div><div class="tile-bottom">${progressBar("Tareas completadas", done, state.tasks.length)}<span class="tile-detail">${percentage(done, state.tasks.length)}%</span></div></button>
+    <button class="card home-vendors" data-go="vendors"><span class="tile-icon">${icon("truck")}</span><div class="tile-main"><strong class="tile-ratio">${String(settled).padStart(2, "0")}<span> / ${String(state.vendors.length).padStart(2, "0")}</span></strong><span class="tile-label">Proveedores</span><span class="tile-detail">${pendingVendors} por liquidar</span></div></button>
+    <button class="card home-guests" data-go="guests"><div class="tile-top"><span class="tile-icon">${icon("users")}</span><span class="pill">${percentage(confirmed, state.guests.length)}%</span></div><div class="tile-main"><strong class="tile-ratio">${confirmed}<span> / ${state.guests.length}</span></strong><span class="tile-label">Invitados</span><span class="tile-detail">${state.tables.length} ${state.tables.length === 1 ? "mesa" : "mesas"}</span></div></button>
+  </div>
+  <button class="urgent-row" data-go="tasks" data-filter-route="urgent"><span class="urgent-badge">${icon(urgent ? "urgent" : "check")}</span><strong>${urgent ? `${urgent} ${urgent === 1 ? "asunto urgente" : "asuntos urgentes"}` : "Sin pendientes urgentes"}</strong>${icon("chevron", "chevron")}</button>`;
 }
 function tick() {
-  if (!state || !$("#countdown")) return;
+  const counter = $("#countdown");
+  if (!state || !counter) return;
   const c = countdown(state.event);
-  $("#countdown-caption").textContent = c.started
-    ? "La fecha del evento ha llegado"
-    : "Nos vemos en el jardín";
-  $("#countdown").innerHTML = [
-    ["days", "días"],
-    ["hours", "horas"],
-    ["minutes", "minutos"],
-    ["seconds", "segundos"],
-  ]
+  counter.setAttribute(
+    "aria-label",
+    c.started
+      ? "La fecha del evento ha llegado"
+      : `${c.days} días, ${c.hours} horas, ${c.minutes} minutos y ${c.seconds} segundos`,
+  );
+  counter.innerHTML = ["days", "hours", "minutes", "seconds"]
     .map(
-      ([key, label]) =>
-        `<div class="countdown-unit"><strong>${String(c[key]).padStart(2, "0")}</strong><span>${label}</span></div>`,
+      (key, i) =>
+        `${i ? '<span class="countdown-colon" aria-hidden="true">:</span>' : ""}<strong class="${key === "seconds" ? "countdown-seconds" : ""}" aria-hidden="true">${String(c[key]).padStart(2, "0")}</strong>`,
     )
     .join("");
 }
@@ -224,11 +322,14 @@ function agendaPage() {
     .sort(byStart)
     .filter((a) => filter === "all" || a.status === filter);
   return (
-    heading(
-      "Agenda",
-      `${new Intl.DateTimeFormat("es-MX", { day: "numeric", month: "long", timeZone: "America/Mexico_City" }).format(new Date(state.event.date + "T12:00:00-06:00"))} · Horario de Puebla`,
+    countSummary(
+      "agenda",
+      "Itinerario",
       button("agenda-export", "Exportar itinerario", "download") +
         button("new-agenda", "Agregar actividad"),
+      state.agenda.filter((a) => a.status === "done").length,
+      state.agenda.length,
+      "Completadas",
     ) +
     filters([
       ["all", "Todo"],
@@ -236,7 +337,7 @@ function agendaPage() {
       ["active", "En curso"],
       ["done", "Listo"],
     ]) +
-    `<div class="list">${entries.map((a) => `<button class="list-row agenda-row" data-open="agenda" data-id="${esc(a.id)}"><div class="agenda-time">${a.start}<small>${a.end || "por definir"}</small></div><div class="row-content"><div class="row-title">${esc(a.title)}</div><div class="row-meta">${esc(personName(a.personId))}${a.location ? " · " + esc(a.location) : ""}</div>${a.endNote ? `<p class="row-meta">${esc(a.endNote)}</p>` : ""}${a.status !== "pending" ? `<span class="pill">${labels[a.status]}</span>` : ""}</div>${icon("chevron", "chevron")}</button>`).join("") || empty("Sin actividades", "No hay actividades con este estado.", "new-agenda", "Agregar actividad", "calendar")}</div>`
+    `<div class="list">${entries.map((a) => `<button class="list-row agenda-row" data-open="agenda" data-id="${esc(a.id)}"><div class="agenda-time">${a.start}<small>${a.end || "por definir"}</small></div><div class="row-content"><div class="row-title">${esc(a.title)}</div>${a.personId || a.location ? `<div class="row-meta">${esc([a.personId ? personName(a.personId) : null, a.location].filter(Boolean).join(" · "))}</div>` : ""}${a.endNote ? `<p class="row-meta">${esc(a.endNote)}</p>` : ""}${a.status !== "pending" ? `<span class="pill">${labels[a.status]}</span>` : ""}</div>${icon("chevron", "chevron")}</button>`).join("") || empty("Sin actividades", "No hay actividades con este estado.", "new-agenda", "Agregar actividad", "calendar")}</div>`
   );
 }
 function tasksPage() {
@@ -266,16 +367,21 @@ function tasksPage() {
 }
 function guestsPage() {
   return (
-    heading(
+    countSummary(
+      "guests",
       "Invitados",
-      `${state.guests.length} en lista · ${state.guests.filter((g) => g.attendance === "confirmed").length} confirmados`,
       button("add-guests", "Agregar invitados"),
+      state.guests.filter((g) => g.attendance === "confirmed").length,
+      state.guests.length,
+      "Confirmados",
     ) +
+    `<div class="compact-stats"><button class="mini-stat" data-filter="pending" aria-pressed="${filter === "pending"}">${icon("unassigned")}<strong>${state.guests.filter((g) => g.attendance === "pending").length}</strong><span>Por confirmar</span></button><button class="mini-stat" data-filter="assigned" aria-pressed="${filter === "assigned"}">${icon("table")}<strong>${state.assignments.length}</strong><span>Con mesa</span></button></div>` +
     search("Buscar invitados") +
     filters([
       ["all", "Todos"],
       ["unassigned", "Sin mesa"],
       ["confirmed", "Confirmados"],
+      ["pending", "Pendientes"],
       ["child", "Niños"],
     ]) +
     `<div id="guest-list">${guestList()}</div>`
@@ -288,7 +394,9 @@ function guestList() {
       (filter === "all" ||
         (filter === "unassigned" && !tableFor(g.id)) ||
         (filter === "confirmed" && g.attendance === "confirmed") ||
-        (filter === "child" && g.type === "child")),
+        (filter === "child" && g.type === "child") ||
+        (filter === "pending" && g.attendance === "pending") ||
+        (filter === "assigned" && !!tableFor(g.id))),
   );
   return `<div class="list">${
     rows
@@ -319,19 +427,21 @@ function vendorsPage() {
   );
   const regular = state.vendors.filter((v) => !v.refundable);
   return (
-    heading(
-      "Proveedores",
-      "Acuerdos, abonos y saldos",
-      button("new-vendors", "Agregar proveedor"),
-    ) +
-    `<div class="summary-strip"><div><span>Acordado</span><strong>${money(regular.reduce((n, v) => n + v.total, 0))}</strong></div><div><span>Pagado</span><strong>${money(regular.reduce((n, v) => n + paid(state, v.id), 0))}</strong></div><div><span>Pendiente</span><strong>${money(regular.reduce((n, v) => n + remaining(state, v), 0))}</strong></div></div>` +
+    `<section class="section-summary" data-summary="vendors">${heading("Proveedores", "", button("new-vendors", "Agregar proveedor"))}<div class="balance-label">Por pagar · MXN</div><strong class="balance-value">${money(regular.reduce((n, v) => n + remaining(state, v), 0))}</strong>${progressBar(
+      "Pagos realizados",
+      regular.reduce((n, v) => n + paid(state, v.id), 0),
+      regular.reduce((n, v) => n + v.total, 0),
+    )}<div class="summary-footer"><span>${money(regular.reduce((n, v) => n + paid(state, v.id), 0))} pagados</span><span>${percentage(
+      regular.reduce((n, v) => n + paid(state, v.id), 0),
+      regular.reduce((n, v) => n + v.total, 0),
+    )}%</span></div></section>` +
     filters([
       ["all", "Todos"],
       ["pending", "Por pagar"],
       ["done", "Pagados"],
       ["deposit", "Depósitos"],
     ]) +
-    `<div class="list">${vendors.map((v) => `<button class="list-row" data-open="vendors" data-id="${esc(v.id)}">${icon("wallet")}<div class="row-content"><div class="row-title">${esc(v.name)}</div><div class="row-meta">${esc(v.service)}${v.refundable ? " · Reembolsable" : ""}</div></div><div class="row-end"><strong>${money(remaining(state, v))}</strong><span>${remaining(state, v) > 0 ? "pendiente" : "pagado"}</span></div></button>`).join("") || empty("Cuentas claras", "Registra el total acordado; después podrás agregar cada abono.", "new-vendors", "Agregar proveedor", "wallet")}</div>${notes("Los depósitos reembolsables se muestran por separado y no se suman al gasto. Los saldos históricos requieren confirmación.")}`
+    `<div class="list">${vendors.map((v) => `<button class="list-row" data-open="vendors" data-id="${esc(v.id)}">${icon("wallet")}<div class="row-content"><div class="row-title">${esc(v.name)}</div><div class="row-meta">${esc(v.service)}${v.refundable ? " · Reembolsable" : ""}</div></div><div class="row-end"><strong>${money(remaining(state, v))}</strong><span>${remaining(state, v) > 0 ? "pendiente" : "pagado"}</span></div></button>`).join("") || empty("Cuentas claras", "Registra el total acordado; después podrás agregar cada abono.", "new-vendors", "Agregar proveedor", "wallet")}</div>${state.vendors.some((v) => v.refundable) ? '<p class="finance-note">Depósitos reembolsables separados del gasto.</p>' : ""}`
   );
 }
 function morePage() {
@@ -875,6 +985,7 @@ document.addEventListener("submit", async (e) => {
 document.addEventListener("click", async (e) => {
   const go = e.target.closest("[data-go]");
   if (go) {
+    nextRouteFilter = go.dataset.filterRoute || null;
     location.hash = go.dataset.go;
     return;
   }
@@ -1171,7 +1282,9 @@ async function boot() {
     routeTo();
     if ("serviceWorker" in navigator) {
       try {
-        const reg = await navigator.serviceWorker.register(new URL("../sw.js", import.meta.url));
+        const reg = await navigator.serviceWorker.register(
+          new URL("../sw.js", import.meta.url),
+        );
         reg.addEventListener("updatefound", () => {
           const worker = reg.installing;
           worker?.addEventListener("statechange", () => {

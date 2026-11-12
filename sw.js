@@ -1,6 +1,6 @@
 const BASE = self.registration.scope;
 const PREFIX = `nupcial-shell-${new URL(BASE).pathname}-`;
-const CACHE = `${PREFIX}v2026-11-12-2`;
+const CACHE = `${PREFIX}v2026-11-12-3`;
 const ASSETS = [
   "/",
   "/index.html",
@@ -13,9 +13,17 @@ const ASSETS = [
   "/public/icon.svg",
   "/public/icon-192.png",
   "/public/icon-512.png",
-].map(path => new URL(path.slice(1), BASE).href);
+].map((path) => new URL(path.slice(1), BASE).href);
 self.addEventListener("install", (event) => {
-  event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(ASSETS)));
+  event.waitUntil(
+    caches
+      .open(CACHE)
+      .then((cache) =>
+        cache.addAll(
+          ASSETS.map((url) => new Request(url, { cache: "reload" })),
+        ),
+      ),
+  );
 });
 self.addEventListener("activate", (event) => {
   event.waitUntil(
@@ -34,10 +42,7 @@ self.addEventListener("activate", (event) => {
   );
 });
 self.addEventListener("fetch", (event) => {
-  if (
-    event.request.method !== "GET" ||
-    !event.request.url.startsWith(BASE)
-  )
+  if (event.request.method !== "GET" || !event.request.url.startsWith(BASE))
     return;
   event.respondWith(
     caches
