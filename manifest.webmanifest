@@ -1,0 +1,26 @@
+{
+  "id": "./",
+  "name": "Nupcial · Tu boda, en orden",
+  "short_name": "Nupcial",
+  "lang": "es-MX",
+  "description": "La coordinación de tu boda, a mano y sin conexión.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f4f3ef",
+  "theme_color": "#f4f3ef",
+  "icons": [
+    {
+      "src": "./public/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "./public/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
