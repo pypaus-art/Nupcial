@@ -16,7 +16,7 @@ const short = (s, max) =>
 const symbols = `<defs>
 <symbol id="garden-tree" viewBox="0 0 100 100"><path d="M48 93V65m0 12-14-12m14 9 17-13" fill="none"/><path d="M20 57C-3 43 13 13 34 18 40-2 74 5 73 23c29 1 31 31 13 42-1 26-40 27-44 10-20 12-40-4-22-18Z"/></symbol>
 <symbol id="garden-bush" viewBox="0 0 100 100"><path d="M12 78C-5 65 4 41 23 43 13 20 43 6 56 24c23-15 39 6 30 25 22 10 15 37-6 36H29Z"/><path d="m26 61 9 9m32-19-7 12m-11-21v12" fill="none"/></symbol>
-<symbol id="garden-grass" viewBox="0 0 100 100"><rect x="2" y="2" width="96" height="96" rx="19"/><path d="m15 27 3 7 4-9m30 28 3 8 4-9M72 25l3 9 5-8M20 74l4 8 4-7m44 3 3 7 4-9" fill="none"/></symbol>
+<symbol id="garden-grass" viewBox="0 0 100 100"><path d="m17 30 6 13 7-16m32 3 6 13 7-16M41 64l6 13 7-16" fill="none"/></symbol>
 </defs>`;
 export const defaultGarden = () => [
   {

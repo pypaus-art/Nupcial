@@ -69,12 +69,7 @@ export function tableSpaceFree(candidate, tables, garden) {
     )
   )
     return false;
-  return (
-    !garden?.custom ||
-    !garden.elements.some(
-      (e) => e.kind !== "grass" && overlaps(bounds(candidate), bounds(e), 6),
-    )
-  );
+  return true;
 }
 export function findTableSpace(tables, garden) {
   for (let y = 104; y < 610; y += 28)
@@ -90,11 +85,6 @@ export function findElementSpace(item, elements, tables) {
     for (let x = 32; x < 345; x += 24) {
       const c = { ...item, x, y };
       if (!inside(c)) continue;
-      if (
-        c.kind !== "grass" &&
-        tables.some((t) => overlaps(bounds(c), bounds(t), 6))
-      )
-        continue;
       fallback ??= c;
       if (!elements.some((e) => overlaps(bounds(c), bounds(e), 4))) return c;
     }

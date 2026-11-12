@@ -2380,3 +2380,265 @@ button:not(.palette-item),
     transition: none;
   }
 }
+
+/* Direct choices: every option is visible without opening another menu. */
+.choice-field {
+  grid-column: 1 / -1;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.choice-field legend {
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 7px;
+}
+.choice-grid {
+  display: grid;
+  grid-template-columns: repeat(var(--columns), minmax(0, 1fr));
+  gap: 7px;
+}
+.choice {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  cursor: pointer;
+  border-radius: 12px;
+  touch-action: manipulation;
+}
+.choice input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  margin: 0;
+  cursor: inherit;
+  z-index: 1;
+}
+.choice span {
+  min-height: 46px;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px 6px;
+  border: 1px solid var(--line);
+  border-radius: inherit;
+  background: var(--wash);
+  font-size: 13px;
+  line-height: 1.25;
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+.choice input:checked + span {
+  background: var(--ink);
+  color: var(--inverse);
+  border-color: var(--ink);
+}
+.choice input:focus-visible + span {
+  outline: 2px solid var(--ink);
+  outline-offset: 3px;
+}
+.choice:has(input:disabled) {
+  opacity: 0.38;
+  cursor: not-allowed;
+}
+button:active:not(:disabled),
+a[href]:active,
+.choice:active:not(:has(input:disabled)) {
+  transform: scale(0.94);
+}
+button:active:not(:disabled),
+.choice:active:not(:has(input:disabled)) span {
+  box-shadow: inset 0 0 0 2px currentColor;
+}
+.is-confirmed:not(svg *) {
+  box-shadow: inset 0 0 0 2px var(--ink);
+  background-color: var(--wash);
+}
+.map-table.is-confirmed .table-body {
+  fill: var(--wash);
+  stroke-width: 2.8;
+}
+.garden-object.is-confirmed .object-selection {
+  opacity: 1;
+  stroke-width: 2.5;
+  stroke-dasharray: none;
+}
+/* Each canvas owns the remaining viewport. Selection never changes its bounds. */
+body.canvas-open {
+  overflow: hidden;
+}
+.map-page,
+.garden-editor-page {
+  height: calc(100dvh - 80px);
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 0 10px calc(86px + env(safe-area-inset-bottom));
+  overflow: hidden;
+}
+.canvas-head,
+.table-edit-panel {
+  height: 64px;
+  min-height: 64px;
+  flex: 0 0 64px;
+  padding: 4px;
+  margin: 0;
+  background: none;
+  border-radius: 0;
+}
+.canvas-head .page-head {
+  height: 100%;
+  margin: 0;
+  align-items: center;
+  gap: 5px;
+}
+.canvas-head .page-head h1 {
+  font-size: clamp(21px, 6vw, 28px);
+  line-height: 1.1;
+  margin: 0;
+}
+.canvas-head .page-actions {
+  gap: 5px;
+}
+.canvas-head .editor-control-row {
+  height: 100%;
+  gap: 4px;
+}
+.canvas-head .icon-button {
+  min-width: 44px;
+  min-height: 44px;
+  border-radius: 12px;
+}
+.canvas-head .editor-selection {
+  font-size: 12px;
+  line-height: 1.35;
+}
+.editor-selection strong {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.editor-selection small {
+  display: block;
+  font-size: 10px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.editor-selection input {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  min-height: 32px;
+  padding: 0;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  background: transparent;
+  font-size: 16px;
+}
+.map-page .garden,
+.garden-editor-page .garden-workspace {
+  flex: 1 1 0;
+  min-height: 0;
+  height: auto;
+  aspect-ratio: auto;
+  width: 100%;
+  border-radius: 22px 14px 22px 14px;
+}
+.map-surface {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.editing .map-surface,
+.garden-design-surface {
+  touch-action: none;
+  user-select: none;
+}
+.map-surface .kind-grass use {
+  fill: none;
+  stroke: var(--muted);
+  stroke-width: 2;
+}
+.map-table.drag-blocked .table-selection {
+  opacity: 1;
+  stroke-dasharray: none;
+  stroke-width: 2.5;
+}
+.canvas-head .editor-palette {
+  height: 100%;
+  grid-template-columns: repeat(5, minmax(0, 1fr)) 44px;
+  gap: 3px;
+  margin: 0;
+  align-items: center;
+}
+.canvas-head .palette-item {
+  padding: 3px 0;
+  gap: 2px;
+  min-height: 52px;
+  border-radius: 11px;
+}
+.canvas-head .palette-item span {
+  font-size: 10px;
+}
+.canvas-head .palette-item svg {
+  width: 20px;
+  height: 20px;
+}
+.canvas-zoom {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 44px;
+  height: 44px;
+  gap: 6px;
+}
+#garden-zoom-value {
+  min-width: 72px;
+  border-radius: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.garden-save-error:not(:empty) {
+  position: absolute;
+  inset: auto 8px 8px;
+  padding: 10px;
+  font-size: 12px;
+  border: 1px solid var(--ink);
+  border-radius: 12px;
+  background: var(--paper);
+}
+.garden-save-error:empty {
+  display: none;
+}
+@media (min-width: 760px) {
+  .map-page,
+  .garden-editor-page {
+    height: calc(100dvh - 105px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  button:active:not(:disabled),
+  a[href]:active,
+  .choice:active:not(:has(input:disabled)) {
+    transform: none;
+  }
+}
+@media (min-width: 760px) and (max-height: 500px) {
+  body.canvas-open {
+    padding-top: 0;
+  }
+  .map-page,
+  .garden-editor-page {
+    height: calc(100dvh - 80px);
+  }
+  body.canvas-open .shell {
+    min-height: 100dvh;
+  }
+}

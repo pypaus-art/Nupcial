@@ -17,8 +17,7 @@ import { board, boardContents } from "./garden-view.js";
 import {
   WORLD,
   KINDS,
-  bounds,
-  overlaps,
+  tableSpaceFree,
   clampPosition,
   findElementSpace,
 } from "./map-model.js";
@@ -27,6 +26,7 @@ import {
   soundEnabled,
   setSoundEnabled,
   enter,
+  leave,
   confirmVisual,
   progressFeedback,
 } from "./feedback.js";
@@ -117,16 +117,15 @@ async function change(
   try {
     state = await commit(expected, (s) => mutate(s, action));
     channel?.postMessage("changed");
-    if (close && dialog.open) dialog.close();
+    if (close && dialog.open) await leave(dialog);
     render();
     tone(action.type === "move" ? "select" : "success");
-    if (action.type === "save") {
+    if (action.type === "save" || action.type === "guestUpdate") {
+      const collection = action.collection || "guests";
       const target =
-        action.collection === "tables"
-          ? "data-table"
-          : `data-open="${action.collection}"`;
+        collection === "tables" ? "data-table" : `data-open="${collection}"`;
       const element =
-        action.collection === "tables"
+        collection === "tables"
           ? $(`[data-table="${CSS.escape(action.value.id)}"]`)
           : $(`[${target}][data-id="${CSS.escape(action.value.id)}"]`);
       confirmVisual(element);
@@ -243,19 +242,16 @@ function inkTransition(paint) {
     finish();
   }
 }
-function routeTo() {
+let navigationSequence = 0;
+async function routeTo() {
+  const sequence = ++navigationSequence;
   const next = location.hash.slice(1) || "home";
-  if (
-    route === "garden" &&
-    next !== "garden" &&
-    gardenDirty &&
-    !confirm("¿Salir sin guardar los cambios del jardín?")
-  ) {
-    history.replaceState(null, "", "#garden");
-    pointerNavigation = false;
-    return;
-  }
   if (route === "garden" && next !== "garden") {
+    if (!(await saveGarden()) || sequence !== navigationSequence) {
+      if (sequence === navigationSequence)
+        history.replaceState(null, "", "#garden");
+      return;
+    }
     gardenDraft = null;
     gardenDirty = false;
   }
@@ -316,6 +312,10 @@ function render() {
         : route === "garden"
           ? "garden-editor-page"
           : "";
+  document.body.classList.toggle(
+    "canvas-open",
+    ["map", "garden"].includes(route),
+  );
   main.dataset.route = route;
   main.innerHTML = {
     home: homePage,
@@ -354,9 +354,7 @@ function homePage() {
   const tasks = state.tasks.filter((t) => t.status !== "done");
   const done = state.tasks.length - tasks.length;
   const urgent = tasks.filter((t) => t.priority === "urgent").length;
-  const confirmed = state.guests.filter(
-    (g) => g.attendance === "confirmed",
-  ).length;
+  const assigned = state.assignments.length;
   const settled = state.vendors.filter((v) => remaining(state, v) === 0).length;
   const pendingVendors = state.vendors.length - settled;
   return `<h1 class="sr-only">Inicio</h1><section class="countdown home-countdown" aria-label="Cuenta regresiva al evento"><div id="countdown" class="countdown-values"></div></section>
@@ -364,9 +362,9 @@ function homePage() {
     <button class="card home-next" data-go="agenda"><span class="tile-icon">${icon("calendar")}</span><div class="next-content"><span class="card-label">${upcoming?.status === "active" ? "En curso" : "Próxima actividad"}</span>${upcoming ? `<div class="home-time">${upcoming.start}</div><h2 class="next-title">${esc(upcoming.title)}</h2>${upcoming.personId ? `<p class="tile-detail">${esc(personName(upcoming.personId))}</p>` : ""}` : '<h2 class="next-title">Agenda completada</h2>'}</div></button>
     <button class="card home-tasks" data-go="tasks"><span class="tile-icon">${icon("tasks")}</span><div class="tile-main"><strong class="tile-number">${String(tasks.length).padStart(2, "0")}</strong><span class="tile-label">Pendientes</span></div><div class="tile-bottom">${progressBar("Tareas completadas", done, state.tasks.length)}<span class="tile-detail">${percentage(done, state.tasks.length)}%</span></div></button>
     <button class="card home-vendors" data-go="vendors"><span class="tile-icon">${icon("truck")}</span><div class="tile-main"><strong class="tile-ratio">${String(settled).padStart(2, "0")}<span> / ${String(state.vendors.length).padStart(2, "0")}</span></strong><span class="tile-label">Proveedores</span><span class="tile-detail">${pendingVendors} por liquidar</span></div></button>
-    <button class="card home-guests" data-go="guests"><div class="tile-top"><span class="tile-icon">${icon("users")}</span><span class="pill">${percentage(confirmed, state.guests.length)}%</span></div><div class="tile-main"><strong class="tile-ratio">${confirmed}<span> / ${state.guests.length}</span></strong><span class="tile-label">Invitados</span><span class="tile-detail">${state.tables.length} ${state.tables.length === 1 ? "mesa" : "mesas"}</span></div></button>
+    <button class="card home-guests" data-go="guests"><div class="tile-top"><span class="tile-icon">${icon("users")}</span><span class="pill">${percentage(assigned, state.guests.length)}%</span></div><div class="tile-main"><strong class="tile-ratio">${assigned}<span> / ${state.guests.length}</span></strong><span class="tile-label">Invitados</span><span class="tile-detail">${state.tables.length} ${state.tables.length === 1 ? "mesa" : "mesas"}</span></div></button>
   </div>
-  <button class="urgent-row" data-go="tasks" data-filter-route="urgent"><span class="urgent-badge">${icon(urgent ? "urgent" : "check")}</span><strong>${urgent ? `${urgent} ${urgent === 1 ? "asunto urgente" : "asuntos urgentes"}` : "Sin pendientes urgentes"}</strong>${icon("chevron", "chevron")}</button>`;
+  <button class="urgent-row" data-go="tasks"><span class="urgent-badge">${icon(urgent ? "urgent" : "check")}</span><strong>${urgent ? `${urgent} ${urgent === 1 ? "asunto urgente" : "asuntos urgentes"}` : "Sin pendientes urgentes"}</strong>${icon("chevron", "chevron")}</button>`;
 }
 function tick() {
   const counter = $("#countdown");
@@ -410,11 +408,7 @@ function agendaPage() {
 }
 function tasksPage() {
   const tasks = state.tasks.filter(
-    (t) =>
-      filter === "all" ||
-      (filter === "urgent"
-        ? t.priority === "urgent" && t.status !== "done"
-        : t.status === filter),
+    (t) => filter === "all" || t.status === filter,
   );
   const done = state.tasks.filter((t) => t.status === "done").length;
   return (
@@ -425,12 +419,11 @@ function tasksPage() {
     ) +
     filters([
       ["all", "Todas"],
-      ["urgent", "Urgentes"],
       ["pending", "Pendientes"],
       ["doing", "En curso"],
       ["done", "Listas"],
     ]) +
-    `<div class="list">${tasks.map((t) => `<button class="list-row" data-open="tasks" data-id="${esc(t.id)}"><span class="status-icon ${t.priority}">${icon(t.status === "done" ? "check" : t.priority === "urgent" ? "urgent" : "circle")}</span><div class="row-content"><div class="row-title">${esc(t.title)}</div><div class="row-meta">${!t.personId ? `<span class="unassigned-marker">${icon("unassigned")}Sin responsable</span>` : esc(personName(t.personId))}${t.due ? " · " + esc(t.due) : ""}</div></div>${icon("chevron", "chevron")}</button>`).join("") || empty("Una cosa a la vez", "Anota lo que falta y asígnalo a la persona indicada.", "new-tasks", "Agregar tarea", "tasks")}</div>`
+    `<div class="list">${tasks.map((t) => `<button class="list-row" data-open="tasks" data-id="${esc(t.id)}"><span class="status-icon ${t.priority}" aria-label="Prioridad ${t.priority === "urgent" ? "urgente" : "normal"}">${icon(t.priority === "urgent" ? "urgent" : "circle")}</span><div class="row-content"><div class="row-title">${esc(t.title)}</div><div class="row-meta">${!t.personId ? `<span class="unassigned-marker">${icon("unassigned")}Sin responsable</span>` : esc(personName(t.personId))}${t.due ? " · " + esc(t.due) : ""}</div></div>${icon("chevron", "chevron")}</button>`).join("") || empty("Una cosa a la vez", "Anota lo que falta y asígnalo a la persona indicada.", "new-tasks", "Agregar tarea", "tasks")}</div>`
   );
 }
 function guestsPage() {
@@ -439,18 +432,14 @@ function guestsPage() {
       "guests",
       "Invitados",
       button("add-guests", "Agregar invitados"),
-      state.guests.filter((g) => g.attendance === "confirmed").length,
+      state.assignments.length,
       state.guests.length,
-      "Confirmados",
+      "Con mesa",
     ) +
-    `<div class="compact-stats"><button class="mini-stat" data-filter="pending" aria-pressed="${filter === "pending"}">${icon("unassigned")}<strong>${state.guests.filter((g) => g.attendance === "pending").length}</strong><span>Por confirmar</span></button><button class="mini-stat" data-filter="assigned" aria-pressed="${filter === "assigned"}">${icon("table")}<strong>${state.assignments.length}</strong><span>Con mesa</span></button></div>` +
     search("Buscar invitados") +
     filters([
       ["all", "Todos"],
       ["unassigned", "Sin mesa"],
-      ["confirmed", "Confirmados"],
-      ["pending", "Pendientes"],
-      ["child", "Niños"],
     ]) +
     `<div id="guest-list">${guestList()}</div>`
   );
@@ -459,19 +448,14 @@ function guestList() {
   const rows = state.guests.filter(
     (g) =>
       normalize(g.name).includes(normalize(query)) &&
-      (filter === "all" ||
-        (filter === "unassigned" && !tableFor(g.id)) ||
-        (filter === "confirmed" && g.attendance === "confirmed") ||
-        (filter === "child" && g.type === "child") ||
-        (filter === "pending" && g.attendance === "pending") ||
-        (filter === "assigned" && !!tableFor(g.id))),
+      (filter === "all" || (filter === "unassigned" && !tableFor(g.id))),
   );
   return `<div class="list">${
     rows
       .slice(0, 250)
       .map(
         (g) =>
-          `<button class="list-row" data-open="guests" data-id="${esc(g.id)}"><span class="avatar">${esc(initials(g.name))}</span><div class="row-content"><div class="row-title">${esc(g.name)}</div><div class="row-meta">${esc(tableFor(g.id)?.name || "Sin mesa")} · ${labels[g.type]}</div></div><div class="row-end"><span>${labels[g.attendance]}</span>${icon("chevron", "chevron")}</div></button>`,
+          `<button class="list-row" data-open="guests" data-id="${esc(g.id)}"><span class="avatar">${esc(initials(g.name))}</span><div class="row-content"><div class="row-title">${esc(g.name)}</div><div class="row-meta">${esc(tableFor(g.id)?.name || "Sin mesa")} · ${labels[g.type]}</div></div>${icon("chevron", "chevron")}</button>`,
       )
       .join("") ||
     empty(
@@ -583,86 +567,38 @@ function eventPage() {
   );
 }
 function mapPage() {
-  return (
-    heading(
-      "Mapa del jardín",
-      "",
-      button("add-table", "Agregar mesa", "plus") +
-        button(
-          "toggle-edit",
-          editing ? "Terminar edición" : "Editar mesas",
-          editing ? "check" : "edit",
-          `icon-button ${editing ? "active" : ""}`,
-        ),
-    ) +
-    (editing
-      ? `<div id="table-edit-panel" class="table-edit-panel">${tableControls()}</div>`
-      : "") +
-    `<div class="garden ${editing ? "editing" : ""}" role="region" aria-label="Distribución orientativa del jardín">${board(state, { editing, selected: selectedTable, tablePreview })}${!state.tables.length ? `<div class="garden-empty">${icon("table")}<p>Organiza las mesas sin perder de vista a tus invitados.</p><button class="primary" data-action="setup-tables">Crear las 14 mesas</button></div>` : ""}</div><div class="map-toolbar"><span>${editing ? "Arrastra una mesa o usa las flechas" : "Toca una mesa para ver sus invitados"}</span><button data-go="guests">${icon("users")}Invitados</button></div>`
-  );
+  return `<div class="canvas-head" id="table-edit-panel">${editing ? tableControls() : heading("Mapa del jardín", "", button("add-table", "Agregar mesa") + button("toggle-edit", "Editar mesas", "edit"))}</div><div class="garden ${editing ? "editing" : ""}" role="region" aria-label="Distribución orientativa del jardín">${board(state, { editing, selected: selectedTable, tablePreview })}${!state.tables.length ? `<div class="garden-empty">${icon("table")}<p>Organiza las mesas.</p><button class="primary" data-action="setup-tables">Crear las 14 mesas</button></div>` : ""}</div>`;
 }
 let selectedTable = null,
   tablePreview = null,
   tableWork = Promise.resolve();
 let gardenDraft = null,
-  gardenRevision = 0,
   gardenBaseline = "",
+  gardenSaved = "",
   gardenSelection = null,
   gardenDirty = false,
-  gardenShowTables = true,
-  gardenHistory = [],
-  gardenFuture = [],
-  gardenStale = false;
+  gardenStale = false,
+  gardenPaletteOpen = false,
+  gardenSaveWork = Promise.resolve(true),
+  gardenSaveTimer;
+const gardenCamera = { zoom: 1, x: WORLD.width / 2, y: WORLD.height / 2 };
 function selectedObject() {
   return gardenDraft?.elements.find((e) => e.id === gardenSelection);
 }
 function updateDirty() {
-  gardenDirty = JSON.stringify(gardenDraft.elements) !== gardenBaseline;
-  const save = $("#save-garden");
-  if (save) save.disabled = !gardenDirty && state.garden.custom;
+  gardenDirty =
+    !!gardenDraft && JSON.stringify(gardenDraft.elements) !== gardenBaseline;
   const status = $("#garden-status");
-  if (status) status.textContent = gardenDirty ? "Sin guardar" : "";
-}
-function pushGardenHistory(previous = gardenDraft) {
-  gardenHistory.push(structuredClone(previous));
-  if (gardenHistory.length > 40) gardenHistory.shift();
-  gardenFuture = [];
+  if (status)
+    status.textContent = gardenStale
+      ? "No se pudo guardar"
+      : gardenDirty
+        ? "Guardando"
+        : "Guardado automáticamente";
 }
 function editorControls() {
-  const e = selectedObject();
-  return `<div class="editor-control-row"><span class="editor-selection">${e ? esc(e.label || KINDS[e.kind].label) : "Elige o agrega un elemento"}</span>${button("garden-undo", "Deshacer", "undo", "icon-button", gardenHistory.length ? "" : "disabled")}${button("garden-redo", "Rehacer", "redo", "icon-button", gardenFuture.length ? "" : "disabled")}${button("garden-rotate", "Girar elemento 90 grados", "rotate", "icon-button", e ? "" : "disabled")}${button("garden-delete", "Quitar elemento", "trash", "icon-button", e ? "" : "disabled")}</div>${e ? `<div class="size-control">${button("garden-shrink", "Reducir elemento un píxel", "minus")}<input id="garden-size" type="range" aria-label="Tamaño del elemento" min="16" max="${Math.min(240, Math.floor((240 * KINDS[e.kind].width) / KINDS[e.kind].height))}" step="1" value="${e.width}">${button("garden-grow", "Aumentar elemento un píxel", "plus")}<span id="garden-dimensions">${e.width} × ${e.height} px</span></div>${["toilet", "entrance"].includes(e.kind) ? `<label class="field object-label"><span class="sr-only">Etiqueta del elemento</span><input id="garden-label" value="${esc(e.label)}" maxlength="60" aria-label="Etiqueta del elemento"></label>` : ""}` : ""}`;
-}
-function refreshGarden() {
-  if (!$("#map-canvas")) return;
-  $("#map-canvas").innerHTML = boardContents(state, {
-    editor: true,
-    draft: gardenDraft,
-    selected: gardenSelection,
-    showTables: gardenShowTables,
-  });
-  $("#garden-controls").innerHTML = editorControls();
-  updateDirty();
-}
-function gardenPage() {
-  if (!gardenDraft) {
-    gardenDraft = structuredClone(state.garden);
-    gardenDraft.custom = true;
-    gardenBaseline = JSON.stringify(state.garden.elements);
-    gardenRevision = state.revision;
-    gardenHistory = [];
-    gardenFuture = [];
-    gardenSelection = null;
-    gardenDirty = false;
-    gardenStale = false;
-    objectRangeBefore = null;
-  }
-  return (
-    heading(
-      "Diseñar jardín",
-      "",
-      button("garden-exit", "Salir del editor", "close"),
-    ) +
-    `<div class="editor-palette" aria-label="Agregar al jardín">${Object.entries(
+  if (gardenPaletteOpen)
+    return `<div class="editor-palette" aria-label="Agregar al jardín">${Object.entries(
       KINDS,
     )
       .map(
@@ -671,18 +607,83 @@ function gardenPage() {
       )
       .join(
         "",
-      )}</div><div class="editor-sticky"><div class="editor-save-row"><button id="save-garden" class="primary" data-action="garden-save" ${!gardenDirty && state.garden.custom ? "disabled" : ""}>${icon("check")}Guardar mapa</button><span id="garden-status" class="muted small">${gardenDirty ? "Sin guardar" : ""}</span><button class="icon-button ${gardenShowTables ? "active" : ""}" data-action="garden-tables" aria-label="Mostrar mesas de referencia" aria-pressed="${gardenShowTables}">${icon("table")}</button></div><div id="garden-controls">${editorControls()}</div></div><p class="form-error" id="garden-error" role="alert">${gardenStale ? "Hubo cambios en otra pestaña. Revisa las mesas antes de guardar." : ""}</p><div class="garden garden-workspace">${board(state, { editor: true, draft: gardenDraft, selected: gardenSelection, showTables: gardenShowTables })}</div><p class="editor-hint">Arrastra para colocar. Las mesas de referencia no se editan aquí.</p>`
+      )}${button("garden-deselect", "Cerrar elementos", "close")}</div>`;
+  const e = selectedObject();
+  if (!e)
+    return heading(
+      "Diseñar jardín",
+      "",
+      button("garden-palette", "Agregar al jardín") +
+        button("garden-exit", "Salir del editor", "close"),
+    );
+  const name = ["toilet", "entrance"].includes(e.kind)
+    ? `<input id="garden-label" value="${esc(e.label)}" maxlength="60" aria-label="Etiqueta del elemento">`
+    : `<strong>${esc(KINDS[e.kind].label)}</strong>`;
+  return `<div class="editor-control-row"><div class="editor-selection">${name}<small id="garden-dimensions">${e.width} × ${e.height} px</small></div>${button("garden-rotate", "Girar elemento 90 grados", "rotate")}${button("garden-shrink", "Reducir elemento un píxel", "minus")}${button("garden-grow", "Aumentar elemento un píxel", "plus")}${button("garden-delete", "Quitar elemento", "trash")}${button("garden-deselect", "Terminar edición del elemento", "check")}</div>`;
+}
+function applyGardenCamera() {
+  const svg = $("#map-canvas");
+  if (!svg || route !== "garden") return;
+  const w = WORLD.width / gardenCamera.zoom,
+    h = WORLD.height / gardenCamera.zoom;
+  gardenCamera.x = Math.max(
+    w / 2,
+    Math.min(WORLD.width - w / 2, gardenCamera.x),
   );
+  gardenCamera.y = Math.max(
+    h / 2,
+    Math.min(WORLD.height - h / 2, gardenCamera.y),
+  );
+  svg.setAttribute(
+    "viewBox",
+    `${gardenCamera.x - w / 2} ${gardenCamera.y - h / 2} ${w} ${h}`,
+  );
+  $("#garden-zoom-value").textContent =
+    `${Math.round(gardenCamera.zoom * 100)}%`;
+  $("[data-action=garden-zoom-out]").disabled = gardenCamera.zoom <= 1;
+  $("[data-action=garden-zoom-in]").disabled = gardenCamera.zoom >= 3;
+}
+function refreshGarden({ controls = true } = {}) {
+  if (route !== "garden" || !$("#map-canvas")) return;
+  $("#map-canvas").innerHTML = boardContents(state, {
+    editor: true,
+    draft: gardenDraft,
+    selected: gardenSelection,
+    showTables: false,
+  });
+  if (controls) $("#garden-controls").innerHTML = editorControls();
+  applyGardenCamera();
+  updateDirty();
+}
+function gardenPage() {
+  if (!gardenDraft) {
+    gardenDraft = structuredClone(state.garden);
+    gardenDraft.custom = true;
+    gardenBaseline = JSON.stringify(state.garden.elements);
+    gardenSaved = JSON.stringify(state.garden);
+    gardenSelection = null;
+    gardenDirty = false;
+    gardenStale = false;
+    gardenPaletteOpen = false;
+    Object.assign(gardenCamera, {
+      zoom: 1,
+      x: WORLD.width / 2,
+      y: WORLD.height / 2,
+    });
+  }
+  // The header always reserves the same height; tools replace it instead of shrinking the canvas.
+  queueMicrotask(applyGardenCamera);
+  return `<div class="canvas-head" id="garden-controls">${editorControls()}</div><div class="garden garden-workspace">${board(state, { editor: true, draft: gardenDraft, selected: gardenSelection, showTables: false })}<div class="garden-save-error" id="garden-error" role="alert"></div></div><div class="canvas-zoom" aria-label="Zoom del jardín">${button("garden-zoom-out", "Alejar jardín", "minus", "icon-button", "disabled")}<button data-action="garden-zoom-fit" id="garden-zoom-value" aria-label="Ver jardín completo">100%</button>${button("garden-zoom-in", "Acercar jardín", "plus")}<span class="sr-only" id="garden-status" role="status">Guardado automáticamente</span></div>`;
 }
 function tableControls() {
   const t = state.tables.find((t) => t.id === selectedTable);
-  return `<div class="editor-control-row"><span class="editor-selection">${t ? esc(t.name) : "Selecciona una mesa"}</span><span class="rotation-value">${t ? t.rotation + "°" : ""}</span>${button("table-rotate", "Girar mesa 90 grados", "rotate", "icon-button", `${t ? "" : "disabled"} id="table-rotate"`)}</div><div class="size-control">${button("table-shrink", "Reducir mesa un píxel", "minus", "icon-button", `${!t || t.width <= 44 ? "disabled" : ""} id="table-shrink"`)}<input id="table-size" type="range" min="44" max="140" step="1" value="${t?.width || 64}" aria-label="Tamaño de la mesa" ${t ? "" : "disabled"}>${button("table-grow", "Aumentar mesa un píxel", "plus", "icon-button", `${!t || t.width >= 140 ? "disabled" : ""} id="table-grow"`)}<span id="table-dimensions">${t ? t.width + " × " + t.height + " px" : "—"}</span></div>`;
+  return `<div class="editor-control-row"><div class="editor-selection"><strong>${t ? esc(t.name) : "Elige una mesa"}</strong><small id="table-dimensions">${t ? `${t.width} × ${t.height} px · ${t.rotation}°` : "Arrastra para mover"}</small></div>${button("table-rotate", "Girar mesa 90 grados", "rotate", "icon-button", `${t ? "" : "disabled"} id="table-rotate"`)}${button("table-shrink", "Reducir mesa un píxel", "minus", "icon-button", `${!t || t.width <= 44 ? "disabled" : ""} id="table-shrink"`)}${button("table-grow", "Aumentar mesa un píxel", "plus", "icon-button", `${!t || t.width >= 140 ? "disabled" : ""} id="table-grow"`)}${button("toggle-edit", "Terminar edición", "check", "icon-button active")}</div>`;
 }
 function selectTable(tableId) {
   const different = selectedTable !== tableId;
   selectedTable = tableId;
   tablePreview = null;
-  if ($("#table-edit-panel"))
+  if (editing && $("#table-edit-panel"))
     $("#table-edit-panel").innerHTML = tableControls();
   if ($("#map-canvas"))
     $("#map-canvas").innerHTML = boardContents(state, {
@@ -691,21 +692,20 @@ function selectTable(tableId) {
     });
   if (different) tone("select");
 }
-function transformTable({ rotationDelta = 0, delta = 0, width = null }) {
+function transformTable({ rotationDelta = 0, delta = 0 }) {
   const target = selectedTable,
     focused = document.activeElement?.id;
   tableWork = tableWork
     .then(async () => {
       const t = state.tables.find((t) => t.id === target);
       if (!t) return;
-      const nextWidth = width === null ? t.width + delta : width;
+      const width = Math.max(44, Math.min(140, t.width + delta));
       const value = {
         ...t,
-        width: nextWidth,
-        height: Math.round((nextWidth * 9) / 16),
+        width,
+        height: Math.round((width * 9) / 16),
         rotation: (t.rotation + rotationDelta) % 360,
       };
-      tablePreview = null;
       await change(
         { type: "save", collection: "tables", value },
         { close: false },
@@ -715,81 +715,124 @@ function transformTable({ rotationDelta = 0, delta = 0, width = null }) {
     })
     .catch((e) => error(e.message));
 }
-function resizeObject(width, record = true) {
+function resizeObject(width) {
   const e = selectedObject();
   if (!e) return;
-  if (record) pushGardenHistory();
   const max = Math.min(
     240,
     Math.floor((240 * KINDS[e.kind].width) / KINDS[e.kind].height),
   );
-  width = Math.max(16, Math.min(max, width));
-  e.width = width;
+  e.width = Math.max(16, Math.min(max, width));
   e.height = Math.max(
     12,
-    Math.round((width * KINDS[e.kind].height) / KINDS[e.kind].width),
+    Math.round((e.width * KINDS[e.kind].height) / KINDS[e.kind].width),
   );
   Object.assign(e, clampPosition(e, e.x, e.y));
   refreshGarden();
+  saveGarden();
 }
-async function saveGarden() {
-  const blocked = gardenDraft.elements.find(
-    (e) =>
-      e.kind !== "grass" &&
-      state.tables.some((t) => overlaps(bounds(e), bounds(t), 6)),
-  );
-  if (blocked) {
-    gardenSelection = blocked.id;
-    refreshGarden();
-    $("#garden-error").textContent =
-      `Mueve «${blocked.label || KINDS[blocked.kind].label}»: ese espacio coincide con una mesa.`;
-    return;
-  }
-  const ok = await change(
-    { type: "garden", value: gardenDraft },
-    { close: false, expected: gardenRevision },
-  );
-  if (ok) {
-    gardenDirty = false;
-    gardenDraft = null;
-    location.hash = "map";
-    toast("Mapa guardado");
-    tone("success");
-  } else if (gardenStale) {
-    $("#garden-error").insertAdjacentHTML(
-      "beforeend",
-      ' <button class="quiet-link" data-action="garden-retry">Revisar y guardar mi diseño</button>',
-    );
-  }
+function scheduleGardenSave() {
+  updateDirty();
+  clearTimeout(gardenSaveTimer);
+  gardenSaveTimer = setTimeout(saveGarden, 220);
+}
+function showGardenSaveError(message) {
+  gardenStale = true;
+  const el = $("#garden-error");
+  if (el)
+    el.innerHTML = `${esc(message)} <button data-action="garden-retry" class="quiet-link">Reintentar</button>`;
+  updateDirty();
+  tone("error");
+}
+function saveGarden() {
+  clearTimeout(gardenSaveTimer);
+  gardenSaveWork = gardenSaveWork.then(async () => {
+    if (!gardenDraft) return true;
+    updateDirty();
+    if (!gardenDirty) return true;
+    const value = structuredClone(gardenDraft);
+    try {
+      if (JSON.stringify(state.garden) !== gardenSaved)
+        throw new Error(
+          "El jardín cambió en otra pestaña. Tu diseño sigue aquí.",
+        );
+      let next;
+      try {
+        next = await commit(state.revision, (s) =>
+          mutate(s, { type: "garden", value }),
+        );
+      } catch (e) {
+        if (!e.message.includes("otra pestaña")) throw e;
+        const latest = await load();
+        state = latest;
+        if (JSON.stringify(latest.garden) !== gardenSaved)
+          throw new Error(
+            "El jardín cambió en otra pestaña. Tu diseño sigue aquí.",
+          );
+        next = await commit(latest.revision, (s) =>
+          mutate(s, { type: "garden", value }),
+        );
+      }
+      state = next;
+      gardenSaved = JSON.stringify(next.garden);
+      gardenBaseline = JSON.stringify(value.elements);
+      gardenStale = false;
+      if ($("#garden-error")) $("#garden-error").textContent = "";
+      updateDirty();
+      channel?.postMessage("changed");
+      return true;
+    } catch (e) {
+      showGardenSaveError(e.message);
+      return false;
+    }
+  });
+  return gardenSaveWork;
 }
 async function gardenAction(action, el) {
-  if (action === "garden-save") {
+  if (action === "garden-retry") {
+    const latest = await load();
+    if (
+      JSON.stringify(latest.garden) !== gardenSaved &&
+      !confirm(
+        "¿Guardar tu diseño sobre el jardín de la otra pestaña? Los demás registros se conservarán.",
+      )
+    )
+      return;
+    state = latest;
+    gardenSaved = JSON.stringify(latest.garden);
     await saveGarden();
     return;
   }
-  if (action === "garden-retry") {
-    if (
-      confirm(
-        "¿Guardar tu diseño sobre los cambios de la otra pestaña? Se conservarán los registros actuales.",
-      )
-    ) {
-      gardenRevision = state.revision;
-      gardenStale = false;
-      await saveGarden();
-    }
-    return;
-  }
   if (action === "garden-exit") {
-    if (gardenDirty && !confirm("¿Salir sin guardar los cambios del jardín?"))
-      return;
-    gardenDirty = false;
-    gardenDraft = null;
     location.hash = "more";
     return;
   }
-  if (action === "garden-tables") {
-    gardenShowTables = !gardenShowTables;
-    render();
+  if (action === "garden-palette" || action === "garden-deselect") {
+    gardenSelection = null;
+    gardenPaletteOpen = action === "garden-palette";
+    refreshGarden();
+    return;
+  }
+  if (action.startsWith("garden-zoom-")) {
+    if (action === "garden-zoom-fit")
+      Object.assign(gardenCamera, {
+        zoom: 1,
+        x: WORLD.width / 2,
+        y: WORLD.height / 2,
+      });
+    else {
+      const selected = selectedObject();
+      if (selected && gardenCamera.zoom === 1)
+        Object.assign(gardenCamera, { x: selected.x, y: selected.y });
+      gardenCamera.zoom = Math.max(
+        1,
+        Math.min(
+          3,
+          gardenCamera.zoom + (action === "garden-zoom-in" ? 0.25 : -0.25),
+        ),
+      );
+    }
+    applyGardenCamera();
     return;
   }
   if (action === "garden-add") {
@@ -806,53 +849,39 @@ async function gardenAction(action, el) {
         label: ["toilet", "entrance"].includes(kind) ? spec.label : "",
       },
       gardenDraft.elements,
-      state.tables,
+      [],
     );
     if (!item) {
-      error(
-        "No hay espacio para este elemento. Reduce su tamaño o reorganiza las mesas.",
-      );
+      error("Reduce el tamaño de este elemento para colocarlo.");
       return;
     }
-    pushGardenHistory();
     gardenDraft.elements.push(item);
     gardenSelection = item.id;
+    gardenPaletteOpen = false;
+    if (gardenCamera.zoom > 1)
+      Object.assign(gardenCamera, { x: item.x, y: item.y });
     refreshGarden();
     confirmVisual($(`[data-garden-object="${CSS.escape(item.id)}"]`));
-    tone("select");
-    return;
-  }
-  if (action === "garden-undo" || action === "garden-redo") {
-    const source = action === "garden-undo" ? gardenHistory : gardenFuture,
-      target = action === "garden-undo" ? gardenFuture : gardenHistory;
-    if (!source.length) return;
-    target.push(structuredClone(gardenDraft));
-    gardenDraft = source.pop();
-    if (!selectedObject()) gardenSelection = null;
-    refreshGarden();
-    tone("select");
+    saveGarden();
     return;
   }
   const selected = selectedObject();
   if (!selected) return;
   if (action === "garden-rotate") {
-    pushGardenHistory();
     selected.rotation = (selected.rotation + 90) % 360;
     Object.assign(selected, clampPosition(selected, selected.x, selected.y));
-    refreshGarden();
-    tone("select");
-  }
-  if (action === "garden-delete") {
-    pushGardenHistory();
+  } else if (action === "garden-delete") {
     gardenDraft.elements = gardenDraft.elements.filter(
       (e) => e.id !== selected.id,
     );
     gardenSelection = null;
-    refreshGarden();
-    tone("select");
-  }
-  if (action === "garden-grow" || action === "garden-shrink")
+  } else if (action === "garden-grow" || action === "garden-shrink") {
     resizeObject(selected.width + (action === "garden-grow" ? 1 : -1));
+    return;
+  } else return;
+  refreshGarden();
+  confirmVisual($(`[data-garden-object="${CSS.escape(selected.id)}"]`));
+  saveGarden();
 }
 function backupPage() {
   return (
@@ -881,6 +910,28 @@ const textarea = (label, name, value = "", extra = "") =>
   `<label class="field wide"><span>${esc(label)}</span><textarea name="${name}" maxlength="2000" ${extra}>${esc(value)}</textarea></label>`;
 function select(label, name, value, options, wide = false) {
   return `<label class="field ${wide ? "wide" : ""}"><span>${label}</span><select name="${name}">${options.map(([v, l]) => `<option value="${esc(v)}" ${String(value ?? "") === String(v) ? "selected" : ""}>${esc(l)}</option>`).join("")}</select></label>`;
+}
+function choices(label, name, value, options, columns = options.length) {
+  return `<fieldset class="choice-field wide"><legend>${esc(label)}</legend><div class="choice-grid" style="--columns:${columns}">${options.map(([v, title, disabled = false]) => `<label class="choice"><input type="radio" name="${name}" value="${esc(v)}" ${String(value ?? "") === String(v) ? "checked" : ""} ${disabled ? "disabled" : ""}><span>${esc(title)}</span></label>`).join("")}</div></fieldset>`;
+}
+function tableChoices(guestId) {
+  const current = tableFor(guestId)?.id || "";
+  return choices(
+    "Mesa",
+    "tableId",
+    current,
+    [
+      ["", "Sin mesa"],
+      ...state.tables.map((t) => [
+        t.id,
+        t.name,
+        t.id !== current &&
+          state.assignments.filter((a) => a.tableId === t.id).length >=
+            t.capacity,
+      ]),
+    ],
+    3,
+  );
 }
 const personSelect = (value) =>
   select(
@@ -915,20 +966,13 @@ function openEntity(collection, entityId) {
     title = "";
     body =
       `<input class="title-input wide" name="name" aria-label="Nombre del invitado" value="${esc(v.name)}" maxlength="160" required>` +
-      select(
-        "Asistencia",
-        "attendance",
-        v.attendance,
-        enumOptions(["confirmed", "pending", "declined"]),
+      choices(
+        "Tipo",
+        "type",
+        v.type || "adult",
+        enumOptions(["adult", "child"]),
       ) +
-      select("Tipo", "type", v.type, enumOptions(["adult", "child"])) +
-      select(
-        "Mesa",
-        "tableId",
-        tableFor(v.id)?.id,
-        [["", "Sin mesa"], ...state.tables.map((t) => [t.id, t.name])],
-        true,
-      ) +
+      tableChoices(v.id) +
       textarea("Observaciones", "notes", v.notes);
   } else if (collection === "people") {
     title = existing ? "Editar responsable" : "Agregar responsable";
@@ -955,13 +999,13 @@ function openEntity(collection, entityId) {
         'required maxlength="160"',
       ) +
       personSelect(v.personId) +
-      select(
+      choices(
         "Prioridad",
         "priority",
         v.priority || "normal",
         enumOptions(["normal", "urgent"]),
       ) +
-      select(
+      choices(
         "Estado",
         "status",
         v.status || "pending",
@@ -992,12 +1036,11 @@ function openEntity(collection, entityId) {
       ) +
       personSelect(v.personId) +
       field("Lugar", "location", v.location, "text", true, 'maxlength="160"') +
-      select(
+      choices(
         "Estado",
         "status",
         v.status || "pending",
         enumOptions(["pending", "active", "done"]),
-        true,
       ) +
       textarea("Descripción", "description", v.description) +
       textarea("Notas", "notes", v.notes);
@@ -1076,7 +1119,7 @@ function tableSearch(all = false) {
     results
       .map(
         (g) =>
-          `<button type="button" class="result" data-select-guest="${esc(g.id)}" aria-pressed="${selectedGuest === g.id}">${esc(g.name)}${g.attendance === "declined" ? " · No asiste" : ""}</button>`,
+          `<button type="button" class="result" data-select-guest="${esc(g.id)}" aria-pressed="${selectedGuest === g.id}">${esc(g.name)}</button>`,
       )
       .join("") ||
     (q || all
@@ -1250,7 +1293,11 @@ document.addEventListener("submit", async (e) => {
       );
     } else if (form.id === "entity-form") {
       const collection = form.dataset.collection;
-      let value = { id: entityId || id(), ...raw };
+      let value = {
+        ...state[collection].find((x) => x.id === entityId),
+        id: entityId || id(),
+        ...raw,
+      };
       if (["tasks", "agenda", "contingencies"].includes(collection))
         value.personId = raw.personId || null;
       if (collection === "agenda") value.end = raw.end || null;
@@ -1311,6 +1358,11 @@ document.addEventListener("submit", async (e) => {
   }
 });
 document.addEventListener("click", async (e) => {
+  if (
+    e.target.closest("#map-canvas") &&
+    performance.now() < suppressMapClickUntil
+  )
+    return;
   const go = e.target.closest("[data-go]");
   if (go) {
     nextRouteFilter = go.dataset.filterRoute || null;
@@ -1458,55 +1510,18 @@ document.addEventListener("click", async (e) => {
   } else if (action === "restore-backup") restoreBackup();
   else if (action === "agenda-export") exportAgenda();
 });
-let objectRangeBefore = null;
 document.addEventListener("input", (e) => {
-  if (e.target.id === "table-size") {
-    const t = state.tables.find((t) => t.id === selectedTable);
-    if (!t) return;
-    const width = Number(e.target.value);
-    tablePreview = { ...t, width, height: Math.round((width * 9) / 16) };
-    $("#map-canvas").innerHTML = boardContents(state, {
-      editing,
-      selected: selectedTable,
-      tablePreview,
-    });
-    $("#table-dimensions").textContent =
-      `${tablePreview.width} × ${tablePreview.height} px`;
-    return;
-  }
-  if (e.target.id === "garden-size") {
-    const item = selectedObject();
-    if (!item) return;
-    objectRangeBefore ??= structuredClone(gardenDraft);
-    const width = Number(e.target.value);
-    item.width = width;
-    item.height = Math.max(
-      12,
-      Math.round((width * KINDS[item.kind].height) / KINDS[item.kind].width),
-    );
-    Object.assign(item, clampPosition(item, item.x, item.y));
-    $("#map-canvas").innerHTML = boardContents(state, {
-      editor: true,
-      draft: gardenDraft,
-      selected: gardenSelection,
-      showTables: gardenShowTables,
-    });
-    $("#garden-dimensions").textContent = `${item.width} × ${item.height} px`;
-    updateDirty();
-    return;
-  }
   if (e.target.id === "garden-label") {
     const item = selectedObject();
     if (!item) return;
-    objectRangeBefore ??= structuredClone(gardenDraft);
     item.label = e.target.value;
     $("#map-canvas").innerHTML = boardContents(state, {
       editor: true,
       draft: gardenDraft,
       selected: gardenSelection,
-      showTables: gardenShowTables,
+      showTables: false,
     });
-    updateDirty();
+    scheduleGardenSave();
     return;
   }
   if (e.target.id === "page-search") {
@@ -1520,22 +1535,18 @@ document.addEventListener("input", (e) => {
   }
 });
 document.addEventListener("change", (e) => {
-  if (e.target.id === "table-size") {
-    transformTable({ width: Number(e.target.value) });
-    return;
-  }
-  if (["garden-size", "garden-label"].includes(e.target.id)) {
-    if (objectRangeBefore) {
-      pushGardenHistory(objectRangeBefore);
-      objectRangeBefore = null;
-    }
-    refreshGarden();
+  if (e.target.id === "garden-label") {
+    saveGarden();
     return;
   }
   if (e.target.id === "backup-file") inspectBackup(e.target.files[0]);
 });
 $(".close-dialog").innerHTML = icon("close");
-$(".close-dialog").onclick = () => dialog.close();
+$(".close-dialog").onclick = () => leave(dialog);
+dialog.addEventListener("cancel", (e) => {
+  e.preventDefault();
+  leave(dialog);
+});
 dialog.addEventListener("click", (e) => {
   if (e.target === dialog) {
     const r = dialog.getBoundingClientRect();
@@ -1545,94 +1556,137 @@ dialog.addEventListener("click", (e) => {
       e.clientY < r.top ||
       e.clientY > r.bottom
     )
-      dialog.close();
+      leave(dialog);
   }
 });
-// All pointer positions use the SVG screen matrix; resize and rotation share this space.
-let drag;
-function worldPoint(event) {
-  const svg = $("#map-canvas");
-  return new DOMPoint(event.clientX, event.clientY).matrixTransform(
-    svg.getScreenCTM().inverse(),
-  );
+// Capture on the stable SVG root, never a child replaced by selection controls.
+let drag,
+  suppressMapClickUntil = 0,
+  externalUpdatePending = false;
+function worldPoint(
+  event,
+  inverse = $("#map-canvas").getScreenCTM().inverse(),
+) {
+  return new DOMPoint(event.clientX, event.clientY).matrixTransform(inverse);
 }
 document.addEventListener("pointerdown", (e) => {
+  const svg = e.target.closest("#map-canvas");
+  if (!svg || e.button !== 0 || drag || !(route === "garden" || editing))
+    return;
   const el = e.target.closest("[data-table],[data-garden-object]");
-  if (!el || e.button !== 0 || drag) return;
-  const isObject = el.hasAttribute("data-garden-object");
-  if (isObject ? route !== "garden" : !editing) return;
-  const item = isObject
-    ? gardenDraft.elements.find((x) => x.id === el.dataset.gardenObject)
-    : state.tables.find((x) => x.id === el.dataset.table);
-  if (!item) return;
-  if (isObject) {
-    gardenSelection = item.id;
-    $("#garden-controls").innerHTML = editorControls();
-  } else {
-    selectedTable = item.id;
-    $("#table-edit-panel").innerHTML = tableControls();
+  const isObject = !!el?.hasAttribute("data-garden-object");
+  const pan = !el && route === "garden" && gardenCamera.zoom > 1;
+  if (!el && !pan) return;
+  if (el && (isObject ? route !== "garden" : !editing)) return;
+  const item = pan
+    ? null
+    : isObject
+      ? gardenDraft.elements.find((x) => x.id === el.dataset.gardenObject)
+      : state.tables.find((x) => x.id === el.dataset.table);
+  if (!pan && !item) return;
+  if (item) {
+    if (isObject) {
+      gardenSelection = item.id;
+      gardenPaletteOpen = false;
+      $("#garden-controls").innerHTML = editorControls();
+    } else {
+      selectedTable = item.id;
+      $("#table-edit-panel").innerHTML = tableControls();
+    }
+    svg
+      .querySelectorAll('[aria-pressed="true"]')
+      .forEach((x) => x.setAttribute("aria-pressed", "false"));
+    el.setAttribute("aria-pressed", "true");
+    el.classList.add("dragging");
   }
-  el.setAttribute("aria-pressed", "true");
-  const point = worldPoint(e);
+  const inverse = svg.getScreenCTM().inverse();
   drag = {
+    svg,
     el,
-    item: structuredClone(item),
+    pan,
     isObject,
+    item: item && structuredClone(item),
+    inverse,
     pointerId: e.pointerId,
-    start: point,
+    start: worldPoint(e, inverse),
     screenX: e.clientX,
     screenY: e.clientY,
-    next: { x: item.x, y: item.y },
+    next: item && { x: item.x, y: item.y },
     active: false,
     revision: state.revision,
-    before: isObject ? structuredClone(gardenDraft) : null,
+    camera: { ...gardenCamera },
   };
-  el.setPointerCapture(e.pointerId);
-  el.classList.add("dragging");
+  svg.setPointerCapture(e.pointerId);
+  e.preventDefault();
 });
 document.addEventListener("pointermove", (e) => {
   if (!drag || drag.pointerId !== e.pointerId) return;
   if (
     !drag.active &&
-    Math.hypot(e.clientX - drag.screenX, e.clientY - drag.screenY) < 1.5
+    Math.hypot(e.clientX - drag.screenX, e.clientY - drag.screenY) < 3
   )
     return;
   drag.active = true;
-  const point = worldPoint(e),
-    step = drag.isObject ? 1 : 4;
-  drag.next = clampPosition(
+  const point = worldPoint(e, drag.inverse);
+  if (drag.pan) {
+    gardenCamera.x = drag.camera.x - point.x + drag.start.x;
+    gardenCamera.y = drag.camera.y - point.y + drag.start.y;
+    applyGardenCamera();
+    return;
+  }
+  const position = clampPosition(
     drag.item,
-    drag.item.x + Math.round((point.x - drag.start.x) / step) * step,
-    drag.item.y + Math.round((point.y - drag.start.y) / step) * step,
+    drag.item.x + point.x - drag.start.x,
+    drag.item.y + point.y - drag.start.y,
   );
-  drag.el.setAttribute("transform", `translate(${drag.next.x} ${drag.next.y})`);
+  const free =
+    drag.isObject ||
+    tableSpaceFree({ ...drag.item, ...position }, state.tables);
+  drag.el.classList.toggle("drag-blocked", !free);
+  if (!free) return;
+  drag.next = position;
+  drag.el.setAttribute("transform", `translate(${position.x} ${position.y})`);
 });
 async function endDrag(e) {
   if (!drag || drag.pointerId !== e.pointerId) return;
   const d = drag;
   drag = null;
-  d.el.classList.remove("dragging");
-  if (d.el.hasPointerCapture(e.pointerId))
-    d.el.releasePointerCapture(e.pointerId);
-  if (!d.active) return;
-  if (d.isObject) {
-    pushGardenHistory(d.before);
-    Object.assign(
-      gardenDraft.elements.find((x) => x.id === d.item.id),
-      d.next,
-    );
-    refreshGarden();
-    tone("select");
-  } else if (
-    !(await change(
-      { type: "move", id: d.item.id, ...d.next },
-      { close: false, expected: d.revision },
-    ))
-  )
-    render();
+  d.el?.classList.remove("dragging", "drag-blocked");
+  if (d.svg.hasPointerCapture(e.pointerId))
+    d.svg.releasePointerCapture(e.pointerId);
+  suppressMapClickUntil = performance.now() + 350;
+  if (!d.pan) {
+    if (e.type === "pointercancel" || !d.active) {
+      if (d.isObject) refreshGarden();
+      else selectTable(d.item.id);
+    } else if (d.isObject) {
+      Object.assign(
+        gardenDraft.elements.find((x) => x.id === d.item.id),
+        d.next,
+      );
+      refreshGarden();
+      confirmVisual($(`[data-garden-object="${CSS.escape(d.item.id)}"]`));
+      tone("select");
+      await saveGarden();
+    } else if (d.next.x !== d.item.x || d.next.y !== d.item.y) {
+      await change(
+        { type: "move", id: d.item.id, ...d.next },
+        { close: false, expected: d.revision },
+      );
+      confirmVisual($(`[data-table="${CSS.escape(d.item.id)}"]`));
+    } else selectTable(d.item.id);
+  }
+  if (externalUpdatePending) {
+    externalUpdatePending = false;
+    await syncExternal();
+  }
 }
 document.addEventListener("pointerup", endDrag);
 document.addEventListener("pointercancel", endDrag);
+document.addEventListener("lostpointercapture", (e) => {
+  if (drag?.pointerId === e.pointerId)
+    endDrag({ pointerId: e.pointerId, type: "pointercancel" });
+});
 document.addEventListener("keydown", async (e) => {
   const el = e.target.closest("[data-table],[data-garden-object]");
   if (!el) return;
@@ -1663,10 +1717,10 @@ document.addEventListener("keydown", async (e) => {
     item.y + (e.key === "ArrowDown" ? step : e.key === "ArrowUp" ? -step : 0),
   );
   if (isObject) {
-    pushGardenHistory();
     Object.assign(item, position);
     gardenSelection = item.id;
     refreshGarden();
+    saveGarden();
     $(`[data-garden-object="${CSS.escape(item.id)}"]`)?.focus();
   } else {
     selectedTable = item.id;
@@ -1716,18 +1770,36 @@ window.addEventListener("online", connection);
 window.addEventListener("offline", connection);
 connection();
 window.addEventListener("hashchange", routeTo);
-channel?.addEventListener("message", async () => {
-  state = await load();
+async function syncExternal() {
+  if (drag) {
+    externalUpdatePending = true;
+    return;
+  }
+  const latest = await load();
+  if (latest.revision <= state.revision) return;
+  state = latest;
   if (route === "garden" && gardenDraft) {
-    gardenStale = true;
-    render();
-    $("#garden-error").textContent =
-      "Hubo cambios en otra pestaña. Revisa las mesas antes de guardar.";
+    if (gardenDirty) {
+      if (JSON.stringify(latest.garden) !== gardenSaved)
+        showGardenSaveError(
+          "El jardín cambió en otra pestaña. Tu diseño sigue aquí.",
+        );
+    } else {
+      gardenDraft = structuredClone(latest.garden);
+      gardenDraft.custom = true;
+      gardenBaseline = JSON.stringify(latest.garden.elements);
+      gardenSaved = JSON.stringify(latest.garden);
+      refreshGarden();
+    }
     return;
   }
   render();
   if (dialog.open)
     toast("Hubo cambios en otra pestaña. Reabre la ficha antes de guardar.");
+}
+channel?.addEventListener("message", syncExternal);
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden && gardenDirty) saveGarden();
 });
 window.addEventListener("beforeinstallprompt", (e) => {
   e.preventDefault();

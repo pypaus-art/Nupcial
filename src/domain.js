@@ -246,7 +246,7 @@ export function validate(s) {
     for (const t of s.tables)
       check(
         tableSpaceFree(t, s.tables, s.garden),
-        "No hay espacio: las mesas no pueden superponerse entre sí ni con los elementos del jardín.",
+        "No hay espacio: las mesas no pueden superponerse entre sí.",
       );
   }
   const assigned = new Set();
