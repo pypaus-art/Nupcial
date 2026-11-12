@@ -429,12 +429,14 @@ function tasksPage() {
   );
   const done = state.tasks.filter((t) => t.status === "done").length;
   return (
-    heading(
+    countSummary(
+      "tasks",
       "Tareas",
-      `${done} de ${state.tasks.length} terminadas`,
       button("new-tasks", "Agregar tarea"),
+      done,
+      state.tasks.length,
+      "Terminadas",
     ) +
-    progressBar("Tareas terminadas", done, state.tasks.length) +
     filters([
       ["all", "Todas"],
       ["pending", "Pendientes"],
@@ -631,7 +633,7 @@ function editorControls() {
   const name = ["toilet", "entrance"].includes(e.kind)
     ? `<input id="garden-label" value="${esc(e.label)}" maxlength="60" aria-label="Etiqueta del elemento">`
     : `<strong>${esc(KINDS[e.kind].label)}</strong>`;
-  return `<div class="editor-control-row"><div class="editor-selection">${name}<small id="garden-dimensions">${e.width} × ${e.height} px</small></div>${button("garden-rotate", "Girar elemento 90 grados", "rotate")}${button("garden-shrink", "Reducir elemento un píxel", "minus")}${button("garden-grow", "Aumentar elemento un píxel", "plus")}${button("garden-delete", "Quitar elemento", "trash")}${button("garden-deselect", "Terminar edición del elemento", "check")}</div>`;
+  return `<div class="editor-control-row"><div class="editor-selection">${name}<small id="garden-dimensions">${e.width} × ${e.height} px</small></div>${button("garden-rotate", "Girar elemento 90 grados", "rotate")}${button("garden-shrink", "Reducir elemento 5 píxeles", "minus")}${button("garden-grow", "Aumentar elemento 5 píxeles", "plus")}${button("garden-delete", "Quitar elemento", "trash")}${button("garden-deselect", "Terminar edición del elemento", "check")}</div>`;
 }
 let mapArea = WORLD_AREA,
   mapAreaKey = "",
@@ -939,7 +941,7 @@ async function gardenAction(action, el) {
     );
     gardenSelection = null;
   } else if (action === "garden-grow" || action === "garden-shrink") {
-    resizeObject(selected.width + (action === "garden-grow" ? 1 : -1));
+    resizeObject(selected.width + (action === "garden-grow" ? 5 : -5));
     return;
   } else return;
   refreshGarden();

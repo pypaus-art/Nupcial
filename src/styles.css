@@ -2930,3 +2930,8 @@ body.home-open {
     margin-top: 2px;
   }
 }
+
+/* Vegetation recedes only in the table arrangement view. */
+.map-page .garden-background :is(.kind-tree, .kind-grass, .kind-bush) {
+  opacity: 0.5;
+}
