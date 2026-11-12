@@ -1,4 +1,16 @@
 const paths = {
+  rotate: '<path d="M20 9a8 8 0 1 0 0 7M20 3v6h-6"/>',
+  undo: '<path d="m8 4-5 5 5 5M3 9h10a7 7 0 0 1 0 14"/>',
+  redo: '<path d="m16 4 5 5-5 5m5-5H11a7 7 0 0 0 0 14"/>',
+  tree: '<path d="M12 21v-7m0 4-4-3m4 1 4-3"/><path d="M6 13C1 12 3 5 7 6 6 0 15 0 16 5c6-1 8 8 2 10-2 3-7 3-9 0-3 2-6 0-3-2Z"/>',
+  bush: '<path d="M5 19C0 17 1 9 6 11 3 5 12 2 14 7c7-4 10 6 5 8 5 3 1 7-3 5H7Z"/>',
+  grass: '<path d="m3 16 3 4 3-6m2-9 2 5 3-7m1 13 2 4 3-6"/>',
+  toilet:
+    '<circle cx="12" cy="5" r="2"/><path d="M7 12c0-5 10-5 10 0v4h-3v6h-4v-6H7Z"/>',
+  entrance: '<path d="M3 3h7v18H3m11-15 6 6-6 6m-3-6h9"/>',
+  sound:
+    '<path d="m3 9 5 0 5-5v16l-5-5H3Zm13-2c4 3 4 7 0 10m3-13c6 5 6 11 0 16"/>',
+  muted: '<path d="m3 9 5 0 5-5v16l-5-5H3Zm14 0 5 6m-5 0 5-6"/>',
   truck:
     '<path d="M3 5h11v12H3zM14 9h4l3 4v4h-7"/><circle cx="7" cy="18" r="2"/><circle cx="18" cy="18" r="2"/>',
   home: '<path d="m3 10 9-7 9 7v10H3z"/><path d="M9 20v-7h6v7"/>',

@@ -1934,31 +1934,45 @@ main {
   animation-timing-function: var(--ease);
 }
 ::view-transition-old(eink-page) {
-  animation: ink-erase 75ms var(--ease) both;
+  animation: ink-erase 95ms var(--ease) both;
   mix-blend-mode: normal;
 }
 ::view-transition-new(eink-page) {
-  animation: ink-print 150ms var(--ease) 45ms both;
+  animation: ink-print 180ms var(--ease) 55ms both;
   mix-blend-mode: normal;
 }
 @keyframes ink-erase {
-  from {
+  0% {
     opacity: 1;
-    filter: blur(0px) contrast(1);
+    mask-image: none;
+    filter: blur(0px);
   }
-  to {
+  40% {
+    opacity: 0.7;
+    mask-image: var(--ink-dense);
+    filter: blur(0.15px);
+  }
+  100% {
     opacity: 0;
-    filter: blur(0.6px) contrast(0.65);
+    mask-image: var(--ink-sparse);
+    filter: blur(0.35px);
   }
 }
 @keyframes ink-print {
-  from {
+  0% {
     opacity: 0;
-    filter: blur(0.6px) contrast(0.65);
+    mask-image: var(--ink-sparse);
+    filter: blur(0.35px);
   }
-  to {
+  65% {
+    opacity: 0.7;
+    mask-image: var(--ink-dense);
+    filter: blur(0.15px);
+  }
+  100% {
     opacity: 1;
-    filter: blur(0px) contrast(1);
+    mask-image: none;
+    filter: blur(0px);
   }
 }
 @media (max-width: 360px) {
@@ -2046,4 +2060,323 @@ main {
 }
 .shell {
   display: flow-root;
+}
+/* The navigation has its own unchanged snapshot above page snapshots. z-index on
+   the live DOM alone cannot cover the browser's View Transition top layer. */
+.bottom-nav {
+  z-index: 1000;
+  isolation: isolate;
+  view-transition-name: app-nav;
+}
+::view-transition-group(eink-page) {
+  z-index: 1;
+  animation: none;
+}
+::view-transition-group(app-nav) {
+  z-index: 100;
+  animation: none !important;
+}
+::view-transition-old(app-nav) {
+  display: none;
+  animation: none !important;
+}
+::view-transition-new(app-nav) {
+  opacity: 1;
+  animation: none !important;
+  mix-blend-mode: normal;
+}
+::view-transition-old(eink-page),
+::view-transition-new(eink-page),
+main {
+  mask-size: 8px 8px;
+  mask-repeat: repeat;
+}
+button:not(.palette-item),
+.nav-item {
+  transition:
+    transform 120ms var(--ease),
+    background-color 120ms var(--ease);
+}
+.progress span {
+  transform-origin: left center;
+}
+.menu-row .switch-track {
+  width: 38px;
+  height: 23px;
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  padding: 3px;
+  background: var(--wash);
+  flex-shrink: 0;
+}
+.switch-track i {
+  display: block;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: var(--muted);
+  transition: transform 140ms var(--ease);
+}
+.menu-row[aria-pressed="true"] .switch-track {
+  background: var(--ink);
+}
+.menu-row[aria-pressed="true"] .switch-track i {
+  background: var(--inverse);
+  transform: translateX(14px);
+}
+.map-surface {
+  display: block;
+  width: 100%;
+  height: 100%;
+  fill: none;
+  stroke: var(--ink);
+  stroke-width: 1.2;
+}
+.map-surface text {
+  fill: var(--ink);
+  stroke: none;
+  font-family: inherit;
+}
+.map-surface .garden-object use {
+  fill: var(--wash);
+  stroke: var(--muted);
+  stroke-width: 1.5;
+}
+.map-surface .kind-grass use {
+  fill: var(--soft);
+  stroke: var(--line);
+}
+.map-surface .landmark-frame {
+  fill: var(--paper);
+  stroke: var(--line);
+}
+.map-surface .landmark-icon {
+  fill: none;
+  stroke: var(--muted);
+  stroke-width: 1.5;
+}
+.map-surface .landmark-label {
+  font-size: 11px;
+  fill: var(--muted);
+}
+.map-surface .table-body {
+  fill: var(--paper);
+  stroke: var(--ink);
+  stroke-width: 1.1;
+}
+.map-surface .table-seats {
+  fill: var(--paper);
+  stroke: var(--muted);
+  stroke-width: 0.8;
+}
+.map-surface .table-direction {
+  fill: none;
+  stroke: var(--muted);
+  stroke-width: 1;
+}
+.map-table {
+  cursor: pointer;
+  touch-action: manipulation;
+  outline: none;
+}
+.map-table-label {
+  font-size: 11px;
+  font-weight: 500;
+  pointer-events: none;
+}
+.map-table-count {
+  font-size: 9px;
+  fill: var(--muted) !important;
+  pointer-events: none;
+}
+.table-hit,
+.object-hit {
+  fill: transparent;
+  stroke: none;
+}
+.table-selection,
+.object-selection {
+  fill: none;
+  stroke: var(--ink);
+  stroke-width: 1.5;
+  stroke-dasharray: 4 3;
+  opacity: 0;
+  pointer-events: none;
+  vector-effect: non-scaling-stroke;
+}
+.map-table:focus-visible .table-selection,
+.editing .map-table[aria-pressed="true"] .table-selection,
+.garden-object:focus-visible .object-selection,
+.garden-object[aria-pressed="true"] .object-selection {
+  opacity: 1;
+}
+.editing .map-table {
+  touch-action: none;
+  cursor: grab;
+}
+.map-table.dragging,
+.garden-object.dragging {
+  cursor: grabbing;
+}
+.map-table.dragging .table-body {
+  fill: var(--wash);
+}
+.garden-background {
+  pointer-events: none;
+}
+.garden-design-surface .garden-object {
+  pointer-events: all;
+  cursor: grab;
+  touch-action: none;
+  outline: none;
+}
+.table-ghost {
+  opacity: 0.3;
+  pointer-events: none;
+}
+.table-ghost .table-body {
+  stroke-dasharray: 4 3;
+}
+.table-edit-panel {
+  padding: 8px 10px;
+  border-radius: 16px;
+  background: var(--paper);
+  margin-bottom: 10px;
+  flex-shrink: 0;
+}
+.editor-control-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 44px;
+}
+.editor-selection {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+.rotation-value {
+  font-size: 12px;
+  min-width: 25px;
+  text-align: right;
+}
+.size-control {
+  display: flex;
+  gap: 5px;
+  align-items: center;
+  min-height: 44px;
+}
+.size-control input[type="range"] {
+  flex: 1;
+  min-width: 0;
+  width: 0;
+  height: 44px;
+  accent-color: var(--ink);
+  margin: 0;
+}
+.size-control > span {
+  font-size: 11px;
+  min-width: 79px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.size-control .icon-button {
+  border: 0;
+  background: var(--wash);
+}
+.table-edit-panel .icon-button {
+  min-width: 40px;
+  min-height: 40px;
+}
+.garden-editor-page .page-head h1 {
+  font-size: 28px;
+}
+.editor-palette {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 5px;
+  margin-bottom: 10px;
+}
+.palette-item {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  align-items: center;
+  justify-content: center;
+  min-height: 64px;
+  padding: 8px 2px;
+  background: var(--paper);
+  border-radius: 14px;
+}
+.palette-item span {
+  font-size: 11px;
+}
+.editor-sticky {
+  position: sticky;
+  top: 8px;
+  z-index: 4;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  padding: 10px;
+  margin-bottom: 12px;
+}
+.editor-save-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.editor-save-row .primary {
+  font-size: 12px;
+  min-height: 44px;
+  padding: 8px 12px;
+}
+.editor-save-row > span {
+  flex: 1;
+  font-size: 11px;
+}
+.editor-save-row .icon-button {
+  border: 0;
+}
+.editor-save-row + div:not(:empty) {
+  border-top: 1px solid var(--line);
+  margin-top: 7px;
+  padding-top: 5px;
+}
+.object-label {
+  margin: 4px 0 0;
+}
+.object-label input {
+  font-size: 16px;
+  min-height: 44px;
+}
+.garden-workspace {
+  flex: none;
+  width: 100%;
+  height: auto;
+  min-height: 0;
+  aspect-ratio: 360 / 640;
+  border-radius: 24px 14px 24px 14px;
+}
+.editor-hint {
+  padding: 10px 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.quiet-link {
+  font-size: 12px;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  padding: 8px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .bottom-nav {
+    view-transition-name: none;
+  }
+  .switch-track i {
+    transition: none;
+  }
 }

@@ -1,4 +1,15 @@
-export const SCHEMA = 1;
+import {
+  WORLD,
+  KINDS,
+  tableDefaults,
+  legacyTable,
+  bounds,
+  inside,
+  overlaps,
+  tableSpaceFree,
+  findTableSpace,
+} from "./map-model.js";
+export const SCHEMA = 2;
 export const EVENT_START = "2026-11-21T14:30:00-06:00";
 export const id = () => crypto.randomUUID();
 export const normalize = (s) =>
@@ -65,6 +76,7 @@ export function seed() {
       time: "14:30",
       timezone: "America/Mexico_City",
     },
+    garden: { version: 1, custom: false, elements: [] },
     people: [],
     guests: [],
     vendors: [],
@@ -102,7 +114,7 @@ export function seed() {
 }
 export function validate(s) {
   check(
-    s && typeof s === "object" && s.schemaVersion === SCHEMA,
+    s && typeof s === "object" && [1, SCHEMA].includes(s.schemaVersion),
     "Versión de respaldo no compatible. No se modificaron tus datos.",
   );
   check(
@@ -150,6 +162,7 @@ export function validate(s) {
       s.event.timezone === "America/Mexico_City",
     "Datos de evento inválidos.",
   );
+  ids.add(s.event.id);
   for (const p of s.people)
     check(
       nonempty(p.name) && text(p.role, 160) && text(p.phone, 80),
@@ -163,27 +176,79 @@ export function validate(s) {
         text(g.notes),
       "Invitado inválido.",
     );
-  for (const t of s.tables)
+  for (const t of s.tables) {
     check(
       nonempty(t.name) &&
         Number.isInteger(t.capacity) &&
         t.capacity >= 1 &&
         t.capacity <= 10 &&
         Number.isInteger(t.x) &&
-        Number.isInteger(t.y) &&
-        t.x >= 0 &&
-        t.x <= 8 &&
-        t.y >= 0 &&
-        t.y <= 7,
+        Number.isInteger(t.y),
       "Mesa inválida: máximo diez lugares y posición dentro del jardín.",
     );
-  for (let i = 0; i < s.tables.length; i++)
-    for (let j = i + 1; j < s.tables.length; j++)
+    if (s.schemaVersion === 1)
       check(
-        s.tables[i].y !== s.tables[j].y ||
-          Math.abs(s.tables[i].x - s.tables[j].x) >= 3,
-        "Las mesas no pueden superponerse. Elige otro espacio.",
+        t.x >= 0 && t.x <= 8 && t.y >= 0 && t.y <= 7,
+        "Mesa inválida: posición fuera del jardín.",
       );
+    else
+      check(
+        Number.isInteger(t.width) &&
+          t.width >= 44 &&
+          t.width <= 140 &&
+          Number.isInteger(t.height) &&
+          t.height >= 24 &&
+          t.height <= 80 &&
+          [0, 90, 180, 270].includes(t.rotation) &&
+          inside(t),
+        "Mesa inválida: revisa tamaño, giro y límites del jardín.",
+      );
+  }
+  if (s.schemaVersion === 1) {
+    for (let i = 0; i < s.tables.length; i++)
+      for (let j = i + 1; j < s.tables.length; j++)
+        check(
+          s.tables[i].y !== s.tables[j].y ||
+            Math.abs(s.tables[i].x - s.tables[j].x) >= 3,
+          "Las mesas no pueden superponerse. Elige otro espacio.",
+        );
+  } else {
+    check(
+      s.garden &&
+        s.garden.version === 1 &&
+        typeof s.garden.custom === "boolean" &&
+        Array.isArray(s.garden.elements) &&
+        s.garden.elements.length <= 10000,
+      "El mapa de jardín no es válido.",
+    );
+    for (const e of s.garden.elements) {
+      check(
+        e && nonempty(e.id) && !ids.has(e.id),
+        "Hay IDs de jardín vacíos o duplicados.",
+      );
+      ids.add(e.id);
+      check(
+        Object.hasOwn(KINDS, e.kind) &&
+          Number.isInteger(e.x) &&
+          Number.isInteger(e.y) &&
+          Number.isInteger(e.width) &&
+          e.width >= 12 &&
+          e.width <= 240 &&
+          Number.isInteger(e.height) &&
+          e.height >= 12 &&
+          e.height <= 240 &&
+          [0, 90, 180, 270].includes(e.rotation) &&
+          text(e.label, 60) &&
+          inside(e),
+        "Elemento de jardín inválido: revisa sus límites, tamaño y tipo.",
+      );
+    }
+    for (const t of s.tables)
+      check(
+        tableSpaceFree(t, s.tables, s.garden),
+        "No hay espacio: las mesas no pueden superponerse entre sí ni con los elementos del jardín.",
+      );
+  }
   const assigned = new Set();
   for (const a of s.assignments) {
     check(
@@ -268,6 +333,15 @@ export function validate(s) {
     );
   return s;
 }
+export function migrate(value) {
+  validate(value);
+  if (value.schemaVersion === SCHEMA) return value;
+  const next = structuredClone(value);
+  next.schemaVersion = SCHEMA;
+  next.tables = next.tables.map(legacyTable);
+  next.garden = { version: 1, custom: false, elements: [] };
+  return validate(next);
+}
 export function amountCents(value) {
   check(
     typeof value === "string" && /^\d+(\.\d{1,2})?$/.test(value.trim()),
@@ -285,8 +359,7 @@ export function parseBackup(raw) {
   } catch {
     fail("El archivo no contiene JSON válido.");
   }
-  // v1 es la primera versión soportada del formato. No se inventa compatibilidad con Boda Amate.
-  return validate(s);
+  return migrate(s);
 }
 export function importNames(s, raw, allowHomonyms = false) {
   check(text(raw, 200000), "La lista es demasiado larga.");
@@ -319,7 +392,7 @@ export function importNames(s, raw, allowHomonyms = false) {
   return { added, duplicates };
 }
 export function mutate(s, action) {
-  const n = structuredClone(s);
+  const n = structuredClone(migrate(s));
   const { type } = action;
   if (type === "save") {
     check(
@@ -335,6 +408,8 @@ export function mutate(s, action) {
       ].includes(action.collection),
       "Colección desconocida.",
     );
+    if (action.collection === "tables")
+      action = { ...action, value: tableDefaults(action.value) };
     const list = n[action.collection],
       i = list.findIndex((x) => x.id === action.value.id);
     if (i < 0) list.push(action.value);
@@ -392,13 +467,37 @@ export function mutate(s, action) {
     t.y = action.y;
   } else if (type === "createTables") {
     check(n.tables.length === 0, "Ya hay mesas registradas.");
-    n.tables = Array.from({ length: 14 }, (_, i) => ({
-      id: id(),
-      name: `Mesa ${i + 1}`,
-      capacity: 10,
-      x: i % 2 ? 5 : 2,
-      y: Math.floor(i / 2),
-    }));
+    n.tables = [];
+    for (let i = 0; i < 14; i++) {
+      const t = legacyTable({
+        id: id(),
+        name: `Mesa ${i + 1}`,
+        capacity: 10,
+        x: i % 2 ? 5 : 2,
+        y: Math.floor(i / 2),
+      });
+      if (!tableSpaceFree(t, n.tables, n.garden)) {
+        const spot = findTableSpace(n.tables, n.garden);
+        check(
+          spot,
+          "No hay espacio para las 14 mesas. Agrega mesas individuales o reorganiza el jardín.",
+        );
+        t.x = spot.x;
+        t.y = spot.y;
+      }
+      n.tables.push(t);
+    }
+  } else if (type === "createTable") {
+    const spot = findTableSpace(n.tables, n.garden);
+    check(
+      spot,
+      "No hay espacio disponible. Reduce una mesa o reorganiza el mapa.",
+    );
+    let num = 1;
+    while (n.tables.some((t) => normalize(t.name) === `mesa ${num}`)) num++;
+    n.tables.push({ ...spot, id: id(), name: `Mesa ${num}`, capacity: 10 });
+  } else if (type === "garden") {
+    n.garden = structuredClone(action.value);
   } else if (type === "event") n.event = { ...n.event, ...action.value };
   else fail("Operación desconocida.");
   n.revision = s.revision + 1;

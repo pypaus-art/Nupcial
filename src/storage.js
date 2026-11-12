@@ -1,4 +1,4 @@
-import { seed, validate } from "./domain.js";
+import { seed, validate, migrate } from "./domain.js";
 const NAME = "nupcial-preview-v1";
 let db;
 const clone = (x) => structuredClone(x);
@@ -28,7 +28,11 @@ export function load() {
     const r = store.get("current");
     r.onsuccess = () => {
       try {
-        state = r.result ? validate(r.result) : seed();
+        state = r.result ? migrate(r.result) : seed();
+        if (r.result && r.result.schemaVersion !== state.schemaVersion) {
+          store.put(r.result, "before-migration-v2");
+          store.put(state, "current");
+        }
         if (!r.result) store.put(state, "current");
       } catch (e) {
         reject(e);
@@ -78,10 +82,10 @@ export function commit(expectedRevision, transform, backup = false) {
     };
   });
 }
-export function recovery() {
+export function recovery(key = "before-restore") {
   return new Promise((resolve, reject) => {
     const tx = db.transaction("state");
-    const r = tx.objectStore("state").get("before-restore");
+    const r = tx.objectStore("state").get(key);
     r.onsuccess = () => resolve(r.result || null);
     r.onerror = () => reject(r.error);
   });

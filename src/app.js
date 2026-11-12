@@ -9,9 +9,28 @@ import {
   remaining,
   amountCents,
   countdown,
+  SCHEMA,
 } from "./domain.js";
 import { openDatabase, load, commit, recovery } from "./storage.js";
 import { icon } from "./icons.js";
+import { board, boardContents } from "./garden-view.js";
+import {
+  WORLD,
+  KINDS,
+  bounds,
+  overlaps,
+  clampPosition,
+  findElementSpace,
+} from "./map-model.js";
+import {
+  tone,
+  soundEnabled,
+  setSoundEnabled,
+  enter,
+  confirmVisual,
+  progressFeedback,
+} from "./feedback.js";
+import { eraseFrames, printFrames } from "./ink.js";
 const $ = (s) => document.querySelector(s);
 const esc = (s) =>
   String(s ?? "").replace(
@@ -80,6 +99,11 @@ function toast(message) {
   toast.timer = setTimeout(() => $("#toast").classList.remove("visible"), 3500);
 }
 function error(message) {
+  tone("error");
+  if (route === "garden" && $("#garden-error")) {
+    $("#garden-error").textContent = message;
+    return;
+  }
   const el = $("#form-error");
   if (dialog.open && el) {
     el.textContent = message;
@@ -95,11 +119,24 @@ async function change(
     channel?.postMessage("changed");
     if (close && dialog.open) dialog.close();
     render();
+    tone(action.type === "move" ? "select" : "success");
+    if (action.type === "save") {
+      const target =
+        action.collection === "tables"
+          ? "data-table"
+          : `data-open="${action.collection}"`;
+      const element =
+        action.collection === "tables"
+          ? $(`[data-table="${CSS.escape(action.value.id)}"]`)
+          : $(`[${target}][data-id="${CSS.escape(action.value.id)}"]`);
+      confirmVisual(element);
+    }
     if (close) toast("Cambios guardados en este dispositivo");
     return true;
   } catch (e) {
     error(e.message);
     if (e.message.includes("otra pestaña")) {
+      if (route === "garden") gardenStale = true;
       state = await load();
       render();
     }
@@ -135,7 +172,7 @@ function nav() {
   $("#nav").innerHTML = items
     .map(
       ([key, label, ico]) =>
-        `<a href="#${key}" ${key === "map" ? 'class="map-nav"' : 'class="nav-item"'} aria-label="${label}" ${route === key || (key === "more" && ["guests", "vendors", "people", "event", "plans", "backup"].includes(route)) ? 'aria-current="page"' : ""}>${icon(ico)}${key !== "map" ? `<span>${label}</span>` : ""}</a>`,
+        `<a href="#${key}" ${key === "map" ? 'class="map-nav"' : 'class="nav-item"'} aria-label="${label}" ${route === key || (key === "more" && ["guests", "vendors", "people", "event", "plans", "backup", "garden"].includes(route)) ? 'aria-current="page"' : ""}>${icon(ico)}${key !== "map" ? `<span>${label}</span>` : ""}</a>`,
     )
     .join("");
 }
@@ -180,26 +217,23 @@ function inkTransition(paint) {
     inkViewTransition = document.startViewTransition(() => {
       if (sequence === inkSequence) paint();
     });
+    inkViewTransition.ready.catch(() => {});
     inkViewTransition.finished.catch(() => {}).finally(finish);
   } else if (main.animate) {
-    inkAnimation = main.animate(
-      [
-        { opacity: 1, filter: "blur(0px)" },
-        { opacity: 0, filter: "blur(.6px)" },
-      ],
-      { duration: 65, easing: "cubic-bezier(.23,1,.32,1)", fill: "none" },
-    );
+    inkAnimation = main.animate(eraseFrames, {
+      duration: 95,
+      easing: "cubic-bezier(.23,1,.32,1)",
+      fill: "none",
+    });
     inkAnimation.finished
       .then(() => {
         if (sequence !== inkSequence) return;
         paint();
-        inkAnimation = main.animate(
-          [
-            { opacity: 0, filter: "blur(.6px)" },
-            { opacity: 1, filter: "blur(0px)" },
-          ],
-          { duration: 140, easing: "cubic-bezier(.23,1,.32,1)", fill: "none" },
-        );
+        inkAnimation = main.animate(printFrames, {
+          duration: 180,
+          easing: "cubic-bezier(.23,1,.32,1)",
+          fill: "none",
+        });
         return inkAnimation.finished;
       })
       .catch(() => {})
@@ -211,6 +245,20 @@ function inkTransition(paint) {
 }
 function routeTo() {
   const next = location.hash.slice(1) || "home";
+  if (
+    route === "garden" &&
+    next !== "garden" &&
+    gardenDirty &&
+    !confirm("¿Salir sin guardar los cambios del jardín?")
+  ) {
+    history.replaceState(null, "", "#garden");
+    pointerNavigation = false;
+    return;
+  }
+  if (route === "garden" && next !== "garden") {
+    gardenDraft = null;
+    gardenDirty = false;
+  }
   route = [
     "home",
     "agenda",
@@ -223,10 +271,13 @@ function routeTo() {
     "event",
     "plans",
     "backup",
+    "garden",
   ].includes(next)
     ? next
     : "home";
   editing = false;
+  selectedTable = null;
+  tablePreview = null;
   query = "";
   filter = nextRouteFilter || "all";
   nextRouteFilter = null;
@@ -238,6 +289,15 @@ function routeTo() {
 }
 function render() {
   if (!state) return;
+  const previousProgress =
+    main.dataset.route === route
+      ? new Map(
+          [...main.querySelectorAll("[role=progressbar]")].map((el) => [
+            el.getAttribute("aria-label"),
+            Number(el.getAttribute("aria-valuenow")),
+          ]),
+        )
+      : new Map();
   nav();
   $("#header-date").textContent = new Intl.DateTimeFormat("es-MX", {
     day: "2-digit",
@@ -249,7 +309,13 @@ function render() {
     .replaceAll(".", "")
     .toUpperCase();
   main.className =
-    route === "map" ? "map-page" : route === "home" ? "home-page" : "";
+    route === "map"
+      ? "map-page"
+      : route === "home"
+        ? "home-page"
+        : route === "garden"
+          ? "garden-editor-page"
+          : "";
   main.dataset.route = route;
   main.innerHTML = {
     home: homePage,
@@ -263,7 +329,9 @@ function render() {
     event: eventPage,
     plans: plansPage,
     backup: backupPage,
+    garden: gardenPage,
   }[route]();
+  progressFeedback(previousProgress, main);
   tick();
 }
 function percentage(value, total) {
@@ -447,6 +515,7 @@ function vendorsPage() {
 function morePage() {
   const links = [
     ["event", "calendar", "Datos del evento", "Fecha, lugar y horario"],
+    ["garden", "leaf", "Diseñar jardín", "Tu fondo para el mapa"],
     ["guests", "users", "Invitados", "Asistencia y mesas"],
     ["vendors", "wallet", "Proveedores y pagos", "Acuerdos y abonos"],
     [
@@ -471,6 +540,7 @@ function morePage() {
           `<button class="menu-row" data-go="${key}">${icon(ico)}<div class="row-content">${title}<small>${sub}</small></div>${icon("chevron", "chevron")}</button>`,
       )
       .join("") +
+    `<button class="menu-row" data-action="toggle-sounds" aria-pressed="${soundEnabled()}">${icon(soundEnabled() ? "sound" : "muted")}<div class="row-content">Sonidos suaves<small>${soundEnabled() ? "Activados" : "Silenciados"}</small></div><span class="switch-track" aria-hidden="true"><i></i></span></button>` +
     notes(
       "Esta versión guarda los datos únicamente en este navegador. Compartir su dirección no comparte tus registros.",
     )
@@ -520,25 +590,283 @@ function mapPage() {
       button("add-table", "Agregar mesa", "plus") +
         button(
           "toggle-edit",
-          editing ? "Terminar edición" : "Editar posición de mesas",
+          editing ? "Terminar edición" : "Editar mesas",
           editing ? "check" : "edit",
           `icon-button ${editing ? "active" : ""}`,
         ),
     ) +
-    `<div class="garden ${editing ? "editing" : ""}" role="region" aria-label="Distribución orientativa del jardín"><div class="garden-top"><span>${icon("person")}Baños</span><span class="hotel">Entrada del hotel ${icon("exit")}</span></div><div class="garden-tree" aria-hidden="true"></div><div class="map-canvas" id="map-canvas">${state.tables.map((t) => `<button class="table" style="left:${t.x * 8.7}%;top:${t.y * 12.4}%" data-table="${esc(t.id)}" aria-label="${esc(t.name)}, ${state.assignments.filter((a) => a.tableId === t.id).length} de ${t.capacity} lugares${editing ? ", mover con flechas" : ""}"><i class="chair-rail top" aria-hidden="true"><i></i><i></i><i></i><i></i></i><i class="chair-rail bottom" aria-hidden="true"><i></i><i></i><i></i><i></i></i><b>${esc(t.name)}</b><span>${state.assignments.filter((a) => a.tableId === t.id).length}/${t.capacity}</span></button>`).join("")}</div>${!state.tables.length ? `<div class="garden-empty">${icon("table")}<p>Organiza las mesas sin perder de vista a tus invitados.</p><button class="primary" data-action="setup-tables">Crear las 14 mesas</button></div>` : ""}<span class="garden-foot">Orientación del jardín · no está a escala</span></div><div class="map-toolbar"><span>${editing ? "Arrastra las mesas · flechas con teclado" : "Toca una mesa para ver sus invitados"}</span><button data-go="guests">${icon("users")}Invitados</button></div>`
+    (editing
+      ? `<div id="table-edit-panel" class="table-edit-panel">${tableControls()}</div>`
+      : "") +
+    `<div class="garden ${editing ? "editing" : ""}" role="region" aria-label="Distribución orientativa del jardín">${board(state, { editing, selected: selectedTable, tablePreview })}${!state.tables.length ? `<div class="garden-empty">${icon("table")}<p>Organiza las mesas sin perder de vista a tus invitados.</p><button class="primary" data-action="setup-tables">Crear las 14 mesas</button></div>` : ""}</div><div class="map-toolbar"><span>${editing ? "Arrastra una mesa o usa las flechas" : "Toca una mesa para ver sus invitados"}</span><button data-go="guests">${icon("users")}Invitados</button></div>`
   );
+}
+let selectedTable = null,
+  tablePreview = null,
+  tableWork = Promise.resolve();
+let gardenDraft = null,
+  gardenRevision = 0,
+  gardenBaseline = "",
+  gardenSelection = null,
+  gardenDirty = false,
+  gardenShowTables = true,
+  gardenHistory = [],
+  gardenFuture = [],
+  gardenStale = false;
+function selectedObject() {
+  return gardenDraft?.elements.find((e) => e.id === gardenSelection);
+}
+function updateDirty() {
+  gardenDirty = JSON.stringify(gardenDraft.elements) !== gardenBaseline;
+  const save = $("#save-garden");
+  if (save) save.disabled = !gardenDirty && state.garden.custom;
+  const status = $("#garden-status");
+  if (status) status.textContent = gardenDirty ? "Sin guardar" : "";
+}
+function pushGardenHistory(previous = gardenDraft) {
+  gardenHistory.push(structuredClone(previous));
+  if (gardenHistory.length > 40) gardenHistory.shift();
+  gardenFuture = [];
+}
+function editorControls() {
+  const e = selectedObject();
+  return `<div class="editor-control-row"><span class="editor-selection">${e ? esc(e.label || KINDS[e.kind].label) : "Elige o agrega un elemento"}</span>${button("garden-undo", "Deshacer", "undo", "icon-button", gardenHistory.length ? "" : "disabled")}${button("garden-redo", "Rehacer", "redo", "icon-button", gardenFuture.length ? "" : "disabled")}${button("garden-rotate", "Girar elemento 90 grados", "rotate", "icon-button", e ? "" : "disabled")}${button("garden-delete", "Quitar elemento", "trash", "icon-button", e ? "" : "disabled")}</div>${e ? `<div class="size-control">${button("garden-shrink", "Reducir elemento un píxel", "minus")}<input id="garden-size" type="range" aria-label="Tamaño del elemento" min="16" max="${Math.min(240, Math.floor((240 * KINDS[e.kind].width) / KINDS[e.kind].height))}" step="1" value="${e.width}">${button("garden-grow", "Aumentar elemento un píxel", "plus")}<span id="garden-dimensions">${e.width} × ${e.height} px</span></div>${["toilet", "entrance"].includes(e.kind) ? `<label class="field object-label"><span class="sr-only">Etiqueta del elemento</span><input id="garden-label" value="${esc(e.label)}" maxlength="60" aria-label="Etiqueta del elemento"></label>` : ""}` : ""}`;
+}
+function refreshGarden() {
+  if (!$("#map-canvas")) return;
+  $("#map-canvas").innerHTML = boardContents(state, {
+    editor: true,
+    draft: gardenDraft,
+    selected: gardenSelection,
+    showTables: gardenShowTables,
+  });
+  $("#garden-controls").innerHTML = editorControls();
+  updateDirty();
+}
+function gardenPage() {
+  if (!gardenDraft) {
+    gardenDraft = structuredClone(state.garden);
+    gardenDraft.custom = true;
+    gardenBaseline = JSON.stringify(state.garden.elements);
+    gardenRevision = state.revision;
+    gardenHistory = [];
+    gardenFuture = [];
+    gardenSelection = null;
+    gardenDirty = false;
+    gardenStale = false;
+    objectRangeBefore = null;
+  }
+  return (
+    heading(
+      "Diseñar jardín",
+      "",
+      button("garden-exit", "Salir del editor", "close"),
+    ) +
+    `<div class="editor-palette" aria-label="Agregar al jardín">${Object.entries(
+      KINDS,
+    )
+      .map(
+        ([kind, spec]) =>
+          `<button data-action="garden-add" data-kind="${kind}" class="palette-item" aria-label="Agregar ${esc(spec.label.toLowerCase())}">${icon(kind)}<span>${spec.label}</span></button>`,
+      )
+      .join(
+        "",
+      )}</div><div class="editor-sticky"><div class="editor-save-row"><button id="save-garden" class="primary" data-action="garden-save" ${!gardenDirty && state.garden.custom ? "disabled" : ""}>${icon("check")}Guardar mapa</button><span id="garden-status" class="muted small">${gardenDirty ? "Sin guardar" : ""}</span><button class="icon-button ${gardenShowTables ? "active" : ""}" data-action="garden-tables" aria-label="Mostrar mesas de referencia" aria-pressed="${gardenShowTables}">${icon("table")}</button></div><div id="garden-controls">${editorControls()}</div></div><p class="form-error" id="garden-error" role="alert">${gardenStale ? "Hubo cambios en otra pestaña. Revisa las mesas antes de guardar." : ""}</p><div class="garden garden-workspace">${board(state, { editor: true, draft: gardenDraft, selected: gardenSelection, showTables: gardenShowTables })}</div><p class="editor-hint">Arrastra para colocar. Las mesas de referencia no se editan aquí.</p>`
+  );
+}
+function tableControls() {
+  const t = state.tables.find((t) => t.id === selectedTable);
+  return `<div class="editor-control-row"><span class="editor-selection">${t ? esc(t.name) : "Selecciona una mesa"}</span><span class="rotation-value">${t ? t.rotation + "°" : ""}</span>${button("table-rotate", "Girar mesa 90 grados", "rotate", "icon-button", `${t ? "" : "disabled"} id="table-rotate"`)}</div><div class="size-control">${button("table-shrink", "Reducir mesa un píxel", "minus", "icon-button", `${!t || t.width <= 44 ? "disabled" : ""} id="table-shrink"`)}<input id="table-size" type="range" min="44" max="140" step="1" value="${t?.width || 64}" aria-label="Tamaño de la mesa" ${t ? "" : "disabled"}>${button("table-grow", "Aumentar mesa un píxel", "plus", "icon-button", `${!t || t.width >= 140 ? "disabled" : ""} id="table-grow"`)}<span id="table-dimensions">${t ? t.width + " × " + t.height + " px" : "—"}</span></div>`;
+}
+function selectTable(tableId) {
+  const different = selectedTable !== tableId;
+  selectedTable = tableId;
+  tablePreview = null;
+  if ($("#table-edit-panel"))
+    $("#table-edit-panel").innerHTML = tableControls();
+  if ($("#map-canvas"))
+    $("#map-canvas").innerHTML = boardContents(state, {
+      editing,
+      selected: selectedTable,
+    });
+  if (different) tone("select");
+}
+function transformTable({ rotationDelta = 0, delta = 0, width = null }) {
+  const target = selectedTable,
+    focused = document.activeElement?.id;
+  tableWork = tableWork
+    .then(async () => {
+      const t = state.tables.find((t) => t.id === target);
+      if (!t) return;
+      const nextWidth = width === null ? t.width + delta : width;
+      const value = {
+        ...t,
+        width: nextWidth,
+        height: Math.round((nextWidth * 9) / 16),
+        rotation: (t.rotation + rotationDelta) % 360,
+      };
+      tablePreview = null;
+      await change(
+        { type: "save", collection: "tables", value },
+        { close: false },
+      );
+      if (focused)
+        document.getElementById(focused)?.focus({ preventScroll: true });
+    })
+    .catch((e) => error(e.message));
+}
+function resizeObject(width, record = true) {
+  const e = selectedObject();
+  if (!e) return;
+  if (record) pushGardenHistory();
+  const max = Math.min(
+    240,
+    Math.floor((240 * KINDS[e.kind].width) / KINDS[e.kind].height),
+  );
+  width = Math.max(16, Math.min(max, width));
+  e.width = width;
+  e.height = Math.max(
+    12,
+    Math.round((width * KINDS[e.kind].height) / KINDS[e.kind].width),
+  );
+  Object.assign(e, clampPosition(e, e.x, e.y));
+  refreshGarden();
+}
+async function saveGarden() {
+  const blocked = gardenDraft.elements.find(
+    (e) =>
+      e.kind !== "grass" &&
+      state.tables.some((t) => overlaps(bounds(e), bounds(t), 6)),
+  );
+  if (blocked) {
+    gardenSelection = blocked.id;
+    refreshGarden();
+    $("#garden-error").textContent =
+      `Mueve «${blocked.label || KINDS[blocked.kind].label}»: ese espacio coincide con una mesa.`;
+    return;
+  }
+  const ok = await change(
+    { type: "garden", value: gardenDraft },
+    { close: false, expected: gardenRevision },
+  );
+  if (ok) {
+    gardenDirty = false;
+    gardenDraft = null;
+    location.hash = "map";
+    toast("Mapa guardado");
+    tone("success");
+  } else if (gardenStale) {
+    $("#garden-error").insertAdjacentHTML(
+      "beforeend",
+      ' <button class="quiet-link" data-action="garden-retry">Revisar y guardar mi diseño</button>',
+    );
+  }
+}
+async function gardenAction(action, el) {
+  if (action === "garden-save") {
+    await saveGarden();
+    return;
+  }
+  if (action === "garden-retry") {
+    if (
+      confirm(
+        "¿Guardar tu diseño sobre los cambios de la otra pestaña? Se conservarán los registros actuales.",
+      )
+    ) {
+      gardenRevision = state.revision;
+      gardenStale = false;
+      await saveGarden();
+    }
+    return;
+  }
+  if (action === "garden-exit") {
+    if (gardenDirty && !confirm("¿Salir sin guardar los cambios del jardín?"))
+      return;
+    gardenDirty = false;
+    gardenDraft = null;
+    location.hash = "more";
+    return;
+  }
+  if (action === "garden-tables") {
+    gardenShowTables = !gardenShowTables;
+    render();
+    return;
+  }
+  if (action === "garden-add") {
+    const kind = el.dataset.kind,
+      spec = KINDS[kind];
+    if (!spec) return;
+    const item = findElementSpace(
+      {
+        id: id(),
+        kind,
+        width: spec.width,
+        height: spec.height,
+        rotation: 0,
+        label: ["toilet", "entrance"].includes(kind) ? spec.label : "",
+      },
+      gardenDraft.elements,
+      state.tables,
+    );
+    if (!item) {
+      error(
+        "No hay espacio para este elemento. Reduce su tamaño o reorganiza las mesas.",
+      );
+      return;
+    }
+    pushGardenHistory();
+    gardenDraft.elements.push(item);
+    gardenSelection = item.id;
+    refreshGarden();
+    confirmVisual($(`[data-garden-object="${CSS.escape(item.id)}"]`));
+    tone("select");
+    return;
+  }
+  if (action === "garden-undo" || action === "garden-redo") {
+    const source = action === "garden-undo" ? gardenHistory : gardenFuture,
+      target = action === "garden-undo" ? gardenFuture : gardenHistory;
+    if (!source.length) return;
+    target.push(structuredClone(gardenDraft));
+    gardenDraft = source.pop();
+    if (!selectedObject()) gardenSelection = null;
+    refreshGarden();
+    tone("select");
+    return;
+  }
+  const selected = selectedObject();
+  if (!selected) return;
+  if (action === "garden-rotate") {
+    pushGardenHistory();
+    selected.rotation = (selected.rotation + 90) % 360;
+    Object.assign(selected, clampPosition(selected, selected.x, selected.y));
+    refreshGarden();
+    tone("select");
+  }
+  if (action === "garden-delete") {
+    pushGardenHistory();
+    gardenDraft.elements = gardenDraft.elements.filter(
+      (e) => e.id !== selected.id,
+    );
+    gardenSelection = null;
+    refreshGarden();
+    tone("select");
+  }
+  if (action === "garden-grow" || action === "garden-shrink")
+    resizeObject(selected.width + (action === "garden-grow" ? 1 : -1));
 }
 function backupPage() {
   return (
     heading("Respaldo", "Tus datos, también fuera del teléfono") +
-    `<button class="menu-row" data-action="backup-export">${icon("download")}<div class="row-content">Guardar respaldo completo<small>Archivo JSON · versión de esquema 1</small></div>${icon("chevron", "chevron")}</button><div class="card"><h2>Restaurar un respaldo</h2><p class="row-meta">Revisaremos el archivo antes de reemplazar datos. Se conservará una copia preventiva en este dispositivo.</p><label class="field"><span class="sr-only">Seleccionar respaldo JSON</span><input class="backup-input" id="backup-file" type="file" accept=".json,application/json"></label><div id="import-preview"></div></div><button class="menu-row" style="margin-top:14px" data-action="recovery-export">${icon("refresh")}<div class="row-content">Copia anterior a la restauración<small>Descargar para revisar o recuperar</small></div>${icon("chevron", "chevron")}</button><div class="section-head"><h2>Exportaciones operativas</h2></div><button class="menu-row" data-action="agenda-export">${icon("calendar")}<div class="row-content">Compartir itinerario<small>Sin pagos ni datos privados de invitados</small></div>${icon("chevron", "chevron")}</button>${notes("No borres los datos del navegador sin guardar antes un respaldo. La PWA funciona offline tras su primera carga completa; la instalación requiere HTTPS fuera de este entorno local.")}`
+    `<button class="menu-row" data-action="backup-export">${icon("download")}<div class="row-content">Guardar respaldo completo<small>Archivo JSON · versión de esquema ${SCHEMA}</small></div>${icon("chevron", "chevron")}</button><div class="card"><h2>Restaurar un respaldo</h2><p class="row-meta">Revisaremos el archivo antes de reemplazar datos. Se conservará una copia preventiva en este dispositivo.</p><label class="field"><span class="sr-only">Seleccionar respaldo JSON</span><input class="backup-input" id="backup-file" type="file" accept=".json,application/json"></label><div id="import-preview"></div></div><button class="menu-row" style="margin-top:14px" data-action="recovery-export">${icon("refresh")}<div class="row-content">Copia anterior a la restauración<small>Descargar para revisar o recuperar</small></div>${icon("chevron", "chevron")}</button><button class="menu-row" data-action="migration-export">${icon("shield")}<div class="row-content">Copia previa a la actualización<small>Respaldo conservado al incorporar el editor</small></div>${icon("chevron", "chevron")}</button><div class="section-head"><h2>Exportaciones operativas</h2></div><button class="menu-row" data-action="agenda-export">${icon("calendar")}<div class="row-content">Compartir itinerario<small>Sin pagos ni datos privados de invitados</small></div>${icon("chevron", "chevron")}</button>${notes("No borres los datos del navegador sin guardar antes un respaldo. La PWA funciona offline tras su primera carga completa; la instalación requiere HTTPS fuera de este entorno local.")}`
   );
 }
 function modal(content) {
+  const opening = !dialog.open;
   dialogRevision = state.revision;
   $("#dialog-content").innerHTML =
     content + `<p class="form-error" id="form-error" role="alert"></p>`;
   if (!dialog.open) dialog.showModal();
+  if (opening) enter(dialog);
 }
 const field = (
   label,
@@ -853,7 +1181,7 @@ async function inspectBackup(file) {
       throw new Error("El archivo supera el límite de 10 MB.");
     importCandidate = parseBackup(await file.text());
     importRevision = state.revision;
-    box.innerHTML = `<div class="notice-box"><p><strong>Respaldo válido · ${esc(importCandidate.event.name)}</strong></p><p>${importCandidate.guests.length} invitados · ${importCandidate.tables.length} mesas · ${importCandidate.agenda.length} actividades · ${importCandidate.tasks.length} tareas</p><p>${importCandidate.vendors.length} proveedores · ${importCandidate.people.length} responsables</p><p>Guardado: ${esc(importCandidate.updatedAt)}</p></div><button class="primary" data-action="restore-backup">Reemplazar con este respaldo</button>`;
+    box.innerHTML = `<div class="notice-box"><p><strong>Respaldo válido · ${esc(importCandidate.event.name)}</strong></p><p>${importCandidate.guests.length} invitados · ${importCandidate.tables.length} mesas · ${importCandidate.agenda.length} actividades · ${importCandidate.tasks.length} tareas</p><p>${importCandidate.vendors.length} proveedores · ${importCandidate.people.length} responsables</p><p>${importCandidate.garden.elements.length} elementos del jardín</p><p>Guardado: ${esc(importCandidate.updatedAt)}</p></div><button class="primary" data-action="restore-backup">Reemplazar con este respaldo</button>`;
   } catch (e) {
     box.innerHTML = `<p class="form-error" role="alert">${esc(e.message)}</p>`;
   }
@@ -1016,15 +1344,42 @@ document.addEventListener("click", async (e) => {
     $("#assign-button").disabled = false;
     return;
   }
+  const object = e.target.closest("[data-garden-object]");
+  if (object && route === "garden") {
+    if (gardenSelection !== object.dataset.gardenObject) {
+      gardenSelection = object.dataset.gardenObject;
+      refreshGarden();
+      tone("select");
+    }
+    return;
+  }
   const table = e.target.closest("[data-table]");
   if (table) {
     if (!editing) openTable(table.dataset.table);
+    else selectTable(table.dataset.table);
     return;
   }
   const b = e.target.closest("[data-action]");
   if (!b) return;
   const action = b.dataset.action,
     entityId = b.dataset.id;
+  if (action.startsWith("garden-")) {
+    await gardenAction(action, b);
+    return;
+  }
+  if (action === "toggle-sounds") {
+    setSoundEnabled(!soundEnabled());
+    render();
+    return;
+  }
+  if (action === "table-rotate") {
+    transformTable({ rotationDelta: 90 });
+    return;
+  }
+  if (action === "table-grow" || action === "table-shrink") {
+    transformTable({ delta: action === "table-grow" ? 1 : -1 });
+    return;
+  }
   if (action.startsWith("new-")) openEntity(action.slice(4));
   else if (action === "add-guests") addGuests();
   else if (action === "edit-event") eventEdit();
@@ -1041,7 +1396,10 @@ document.addEventListener("click", async (e) => {
   else if (action === "add-payment") paymentForm(entityId);
   else if (action === "toggle-edit") {
     editing = !editing;
+    selectedTable = null;
+    tablePreview = null;
     render();
+    tone("select");
   } else if (action === "setup-tables") {
     if (
       confirm(
@@ -1050,24 +1408,7 @@ document.addEventListener("click", async (e) => {
     )
       change({ type: "createTables" });
   } else if (action === "add-table") {
-    let spot;
-    for (let y = 0; y <= 7 && !spot; y++)
-      for (let x of [2, 5, 8, 0])
-        if (!state.tables.some((t) => t.y === y && Math.abs(t.x - x) < 3)) {
-          spot = { x, y };
-          break;
-        }
-    if (!spot) {
-      toast("No hay espacio disponible en el mapa. Reorganiza las mesas.");
-      return;
-    }
-    let num = 1;
-    while (state.tables.some((t) => normalize(t.name) === `mesa ${num}`)) num++;
-    await change({
-      type: "save",
-      collection: "tables",
-      value: { id: id(), name: `Mesa ${num}`, capacity: 10, ...spot },
-    });
+    await change({ type: "createTable" });
   } else if (action.startsWith("capacity-")) {
     const t = state.tables.find((t) => t.id === entityId);
     if (
@@ -1106,14 +1447,68 @@ document.addEventListener("click", async (e) => {
     )
       openTable(b.dataset.tableId);
   } else if (action === "backup-export") exportBackup();
-  else if (action === "recovery-export") {
+  else if (action === "migration-export") {
+    const previous = await recovery("before-migration-v2");
+    if (previous) exportBackup(previous, "antes-del-editor");
+    else toast("No hay una migración anterior en este dispositivo.");
+  } else if (action === "recovery-export") {
     const s = await recovery();
     if (s) exportBackup(s, "antes-de-restaurar");
     else toast("Todavía no hay una copia preventiva de restauración.");
   } else if (action === "restore-backup") restoreBackup();
   else if (action === "agenda-export") exportAgenda();
 });
+let objectRangeBefore = null;
 document.addEventListener("input", (e) => {
+  if (e.target.id === "table-size") {
+    const t = state.tables.find((t) => t.id === selectedTable);
+    if (!t) return;
+    const width = Number(e.target.value);
+    tablePreview = { ...t, width, height: Math.round((width * 9) / 16) };
+    $("#map-canvas").innerHTML = boardContents(state, {
+      editing,
+      selected: selectedTable,
+      tablePreview,
+    });
+    $("#table-dimensions").textContent =
+      `${tablePreview.width} × ${tablePreview.height} px`;
+    return;
+  }
+  if (e.target.id === "garden-size") {
+    const item = selectedObject();
+    if (!item) return;
+    objectRangeBefore ??= structuredClone(gardenDraft);
+    const width = Number(e.target.value);
+    item.width = width;
+    item.height = Math.max(
+      12,
+      Math.round((width * KINDS[item.kind].height) / KINDS[item.kind].width),
+    );
+    Object.assign(item, clampPosition(item, item.x, item.y));
+    $("#map-canvas").innerHTML = boardContents(state, {
+      editor: true,
+      draft: gardenDraft,
+      selected: gardenSelection,
+      showTables: gardenShowTables,
+    });
+    $("#garden-dimensions").textContent = `${item.width} × ${item.height} px`;
+    updateDirty();
+    return;
+  }
+  if (e.target.id === "garden-label") {
+    const item = selectedObject();
+    if (!item) return;
+    objectRangeBefore ??= structuredClone(gardenDraft);
+    item.label = e.target.value;
+    $("#map-canvas").innerHTML = boardContents(state, {
+      editor: true,
+      draft: gardenDraft,
+      selected: gardenSelection,
+      showTables: gardenShowTables,
+    });
+    updateDirty();
+    return;
+  }
   if (e.target.id === "page-search") {
     query = e.target.value;
     if (route === "guests") $("#guest-list").innerHTML = guestList();
@@ -1125,6 +1520,18 @@ document.addEventListener("input", (e) => {
   }
 });
 document.addEventListener("change", (e) => {
+  if (e.target.id === "table-size") {
+    transformTable({ width: Number(e.target.value) });
+    return;
+  }
+  if (["garden-size", "garden-label"].includes(e.target.id)) {
+    if (objectRangeBefore) {
+      pushGardenHistory(objectRangeBefore);
+      objectRangeBefore = null;
+    }
+    refreshGarden();
+    return;
+  }
   if (e.target.id === "backup-file") inspectBackup(e.target.files[0]);
 });
 $(".close-dialog").innerHTML = icon("close");
@@ -1141,60 +1548,84 @@ dialog.addEventListener("click", (e) => {
       dialog.close();
   }
 });
-// Grid movement uses one coordinate space, direct pointer tracking and atomic persistence.
+// All pointer positions use the SVG screen matrix; resize and rotation share this space.
 let drag;
+function worldPoint(event) {
+  const svg = $("#map-canvas");
+  return new DOMPoint(event.clientX, event.clientY).matrixTransform(
+    svg.getScreenCTM().inverse(),
+  );
+}
 document.addEventListener("pointerdown", (e) => {
-  const el = e.target.closest("[data-table]");
-  if (!el || !editing || e.button !== 0 || drag) return;
-  const t = state.tables.find((t) => t.id === el.dataset.table),
-    canvas = $("#map-canvas").getBoundingClientRect();
+  const el = e.target.closest("[data-table],[data-garden-object]");
+  if (!el || e.button !== 0 || drag) return;
+  const isObject = el.hasAttribute("data-garden-object");
+  if (isObject ? route !== "garden" : !editing) return;
+  const item = isObject
+    ? gardenDraft.elements.find((x) => x.id === el.dataset.gardenObject)
+    : state.tables.find((x) => x.id === el.dataset.table);
+  if (!item) return;
+  if (isObject) {
+    gardenSelection = item.id;
+    $("#garden-controls").innerHTML = editorControls();
+  } else {
+    selectedTable = item.id;
+    $("#table-edit-panel").innerHTML = tableControls();
+  }
+  el.setAttribute("aria-pressed", "true");
+  const point = worldPoint(e);
   drag = {
     el,
-    id: t.id,
+    item: structuredClone(item),
+    isObject,
     pointerId: e.pointerId,
-    startX: e.clientX,
-    startY: e.clientY,
-    x: t.x,
-    y: t.y,
-    newX: t.x,
-    newY: t.y,
-    canvas,
+    start: point,
+    screenX: e.clientX,
+    screenY: e.clientY,
+    next: { x: item.x, y: item.y },
+    active: false,
     revision: state.revision,
+    before: isObject ? structuredClone(gardenDraft) : null,
   };
   el.setPointerCapture(e.pointerId);
   el.classList.add("dragging");
 });
 document.addEventListener("pointermove", (e) => {
-  if (!drag || e.pointerId !== drag.pointerId) return;
-  const d = drag;
-  d.newX = Math.max(
-    0,
-    Math.min(
-      8,
-      Math.round(d.x + (e.clientX - d.startX) / (d.canvas.width * 0.087)),
-    ),
+  if (!drag || drag.pointerId !== e.pointerId) return;
+  if (
+    !drag.active &&
+    Math.hypot(e.clientX - drag.screenX, e.clientY - drag.screenY) < 1.5
+  )
+    return;
+  drag.active = true;
+  const point = worldPoint(e),
+    step = drag.isObject ? 1 : 4;
+  drag.next = clampPosition(
+    drag.item,
+    drag.item.x + Math.round((point.x - drag.start.x) / step) * step,
+    drag.item.y + Math.round((point.y - drag.start.y) / step) * step,
   );
-  d.newY = Math.max(
-    0,
-    Math.min(
-      7,
-      Math.round(d.y + (e.clientY - d.startY) / (d.canvas.height * 0.124)),
-    ),
-  );
-  d.el.style.left = `${d.newX * 8.7}%`;
-  d.el.style.top = `${d.newY * 12.4}%`;
+  drag.el.setAttribute("transform", `translate(${drag.next.x} ${drag.next.y})`);
 });
 async function endDrag(e) {
-  if (!drag || e.pointerId !== drag.pointerId) return;
+  if (!drag || drag.pointerId !== e.pointerId) return;
   const d = drag;
   drag = null;
   d.el.classList.remove("dragging");
   if (d.el.hasPointerCapture(e.pointerId))
     d.el.releasePointerCapture(e.pointerId);
-  if (d.x === d.newX && d.y === d.newY) return;
-  if (
+  if (!d.active) return;
+  if (d.isObject) {
+    pushGardenHistory(d.before);
+    Object.assign(
+      gardenDraft.elements.find((x) => x.id === d.item.id),
+      d.next,
+    );
+    refreshGarden();
+    tone("select");
+  } else if (
     !(await change(
-      { type: "move", id: d.id, x: d.newX, y: d.newY },
+      { type: "move", id: d.item.id, ...d.next },
       { close: false, expected: d.revision },
     ))
   )
@@ -1203,31 +1634,51 @@ async function endDrag(e) {
 document.addEventListener("pointerup", endDrag);
 document.addEventListener("pointercancel", endDrag);
 document.addEventListener("keydown", async (e) => {
-  const el = e.target.closest("[data-table]");
+  const el = e.target.closest("[data-table],[data-garden-object]");
+  if (!el) return;
+  const isObject = el.hasAttribute("data-garden-object");
+  if (["Enter", " "].includes(e.key)) {
+    e.preventDefault();
+    if (isObject) {
+      gardenSelection = el.dataset.gardenObject;
+      refreshGarden();
+    } else if (editing) selectTable(el.dataset.table);
+    else openTable(el.dataset.table);
+    return;
+  }
   if (
-    !el ||
-    !editing ||
-    !["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(e.key)
+    !["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(e.key) ||
+    (isObject ? route !== "garden" : !editing)
   )
     return;
   e.preventDefault();
-  const t = state.tables.find((t) => t.id === el.dataset.table);
-  const x = Math.max(
-      0,
-      Math.min(
-        8,
-        t.x + (e.key === "ArrowRight" ? 1 : e.key === "ArrowLeft" ? -1 : 0),
-      ),
-    ),
-    y = Math.max(
-      0,
-      Math.min(
-        7,
-        t.y + (e.key === "ArrowDown" ? 1 : e.key === "ArrowUp" ? -1 : 0),
-      ),
-    );
-  await change({ type: "move", id: t.id, x, y }, { close: false });
-  $(`[data-table="${CSS.escape(t.id)}"]`)?.focus();
+  const item = isObject
+    ? gardenDraft.elements.find((x) => x.id === el.dataset.gardenObject)
+    : state.tables.find((x) => x.id === el.dataset.table);
+  const step = e.shiftKey ? 1 : isObject ? 2 : 4;
+  const position = clampPosition(
+    item,
+    item.x +
+      (e.key === "ArrowRight" ? step : e.key === "ArrowLeft" ? -step : 0),
+    item.y + (e.key === "ArrowDown" ? step : e.key === "ArrowUp" ? -step : 0),
+  );
+  if (isObject) {
+    pushGardenHistory();
+    Object.assign(item, position);
+    gardenSelection = item.id;
+    refreshGarden();
+    $(`[data-garden-object="${CSS.escape(item.id)}"]`)?.focus();
+  } else {
+    selectedTable = item.id;
+    await change({ type: "move", id: item.id, ...position }, { close: false });
+    $(`[data-table="${CSS.escape(item.id)}"]`)?.focus();
+  }
+});
+window.addEventListener("beforeunload", (e) => {
+  if (gardenDirty) {
+    e.preventDefault();
+    e.returnValue = "";
+  }
 });
 let theme = "system";
 try {
@@ -1267,6 +1718,13 @@ connection();
 window.addEventListener("hashchange", routeTo);
 channel?.addEventListener("message", async () => {
   state = await load();
+  if (route === "garden" && gardenDraft) {
+    gardenStale = true;
+    render();
+    $("#garden-error").textContent =
+      "Hubo cambios en otra pestaña. Revisa las mesas antes de guardar.";
+    return;
+  }
   render();
   if (dialog.open)
     toast("Hubo cambios en otra pestaña. Reabre la ficha antes de guardar.");
