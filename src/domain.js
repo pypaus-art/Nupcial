@@ -8,6 +8,7 @@ import {
   overlaps,
   tableSpaceFree,
   findTableSpace,
+  snapTable,
 } from "./map-model.js";
 export const SCHEMA = 2;
 export const EVENT_START = "2026-11-21T14:30:00-06:00";
@@ -476,6 +477,7 @@ export function mutate(s, action) {
         x: i % 2 ? 5 : 2,
         y: Math.floor(i / 2),
       });
+      Object.assign(t, snapTable(t, t.x, t.y));
       if (!tableSpaceFree(t, n.tables, n.garden)) {
         const spot = findTableSpace(n.tables, n.garden);
         check(

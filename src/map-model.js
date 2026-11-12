@@ -1,4 +1,5 @@
 export const WORLD = Object.freeze({ width: 360, height: 640 });
+export const TABLE_GRID = 8;
 export const KINDS = Object.freeze({
   tree: { label: "Árbol", width: 52, height: 60 },
   grass: { label: "Pasto", width: 120, height: 80 },
@@ -34,31 +35,59 @@ export function bounds(item) {
 export const overlaps = (a, b, gap = 0) =>
   Math.abs(a.x - b.x) < (a.w + b.w) / 2 + gap &&
   Math.abs(a.y - b.y) < (a.h + b.h) / 2 + gap;
-export function inside(item, margin = 6) {
-  const b = bounds(item);
+// The boundary follows the actual chairs. A two-seat table has no lateral chairs.
+export function edgeInsets(item) {
+  if (item.kind) return { left: 0, right: 0, top: 0, bottom: 0 };
+  const capacity = item.capacity ?? 10;
+  let edges = {
+    left: capacity >= 9 ? 6 : 0,
+    right: capacity >= 10 ? 6 : 0,
+    top: 6,
+    bottom: capacity >= 2 ? 6 : 0,
+  };
+  for (let turn = 0; turn < (item.rotation || 0) / 90; turn++)
+    edges = {
+      left: edges.bottom,
+      top: edges.left,
+      right: edges.top,
+      bottom: edges.right,
+    };
+  return edges;
+}
+export function inside(item) {
+  const b = bounds(item),
+    e = edgeInsets(item);
   return (
-    b.x - b.w / 2 >= margin &&
-    b.x + b.w / 2 <= WORLD.width - margin &&
-    b.y - b.h / 2 >= margin &&
-    b.y + b.h / 2 <= WORLD.height - margin
+    b.x - b.w / 2 >= e.left &&
+    b.x + b.w / 2 <= WORLD.width - e.right &&
+    b.y - b.h / 2 >= e.top &&
+    b.y + b.h / 2 <= WORLD.height - e.bottom
   );
 }
 export function clampPosition(item, x, y) {
-  const b = bounds(item);
+  const b = bounds(item),
+    e = edgeInsets(item);
   return {
     x: Math.round(
       Math.max(
-        Math.ceil(b.w / 2 + 6),
-        Math.min(Math.floor(WORLD.width - b.w / 2 - 6), x),
+        Math.ceil(b.w / 2 + e.left),
+        Math.min(Math.floor(WORLD.width - b.w / 2 - e.right), x),
       ),
     ),
     y: Math.round(
       Math.max(
-        Math.ceil(b.h / 2 + 6),
-        Math.min(Math.floor(WORLD.height - b.h / 2 - 6), y),
+        Math.ceil(b.h / 2 + e.top),
+        Math.min(Math.floor(WORLD.height - b.h / 2 - e.bottom), y),
       ),
     ),
   };
+}
+export function snapTable(item, x, y) {
+  return clampPosition(
+    item,
+    Math.round(x / TABLE_GRID) * TABLE_GRID,
+    Math.round(y / TABLE_GRID) * TABLE_GRID,
+  );
 }
 export function tableSpaceFree(candidate, tables, garden) {
   if (!inside(candidate)) return false;
@@ -72,8 +101,8 @@ export function tableSpaceFree(candidate, tables, garden) {
   return true;
 }
 export function findTableSpace(tables, garden) {
-  for (let y = 104; y < 610; y += 28)
-    for (let x = 44; x < 340; x += 20) {
+  for (let y = 104; y < 610; y += TABLE_GRID)
+    for (let x = 40; x < 340; x += TABLE_GRID) {
       const t = tableDefaults({ id: "candidate", x, y });
       if (tableSpaceFree(t, tables, garden)) return t;
     }

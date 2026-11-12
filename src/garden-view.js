@@ -1,4 +1,4 @@
-import { WORLD, KINDS, bounds } from "./map-model.js";
+import { WORLD, KINDS, bounds, TABLE_GRID } from "./map-model.js";
 const esc = (s) =>
   String(s ?? "").replace(
     /[&<>"']/g,
@@ -14,9 +14,9 @@ const short = (s, max) =>
         .join("") + "…"
     : s;
 const symbols = `<defs>
-<symbol id="garden-tree" viewBox="0 0 100 100"><path d="M48 93V65m0 12-14-12m14 9 17-13" fill="none"/><path d="M20 57C-3 43 13 13 34 18 40-2 74 5 73 23c29 1 31 31 13 42-1 26-40 27-44 10-20 12-40-4-22-18Z"/></symbol>
-<symbol id="garden-bush" viewBox="0 0 100 100"><path d="M12 78C-5 65 4 41 23 43 13 20 43 6 56 24c23-15 39 6 30 25 22 10 15 37-6 36H29Z"/><path d="m26 61 9 9m32-19-7 12m-11-21v12" fill="none"/></symbol>
-<symbol id="garden-grass" viewBox="0 0 100 100"><path d="m17 30 6 13 7-16m32 3 6 13 7-16M41 64l6 13 7-16" fill="none"/></symbol>
+<symbol id="garden-tree" viewBox="8 5 91 89" preserveAspectRatio="none"><path d="M48 93V65m0 12-14-12m14 9 17-13" fill="none"/><path d="M20 57C-3 43 13 13 34 18 40-2 74 5 73 23c29 1 31 31 13 42-1 26-40 27-44 10-20 12-40-4-22-18Z"/></symbol>
+<symbol id="garden-bush" viewBox="2 15 99 71" preserveAspectRatio="none"><path d="M12 78C-5 65 4 41 23 43 13 20 43 6 56 24c23-15 39 6 30 25 22 10 15 37-6 36H29Z"/><path d="m26 61 9 9m32-19-7 12m-11-21v12" fill="none"/></symbol>
+<symbol id="garden-grass" viewBox="16 26 60 52" preserveAspectRatio="none"><path d="m17 30 6 13 7-16m32 3 6 13 7-16M41 64l6 13 7-16" fill="none"/></symbol>
 </defs>`;
 export const defaultGarden = () => [
   {
@@ -62,15 +62,30 @@ function table(t, assignments, { editing, selected, ghost }) {
   const b = bounds(t),
     count = assignments.filter((a) => a.tableId === t.id).length;
   const seats = [];
-  for (let i = 0; i < 4; i++) {
-    const x = -t.width / 2 + 8 + (i * (t.width - 16)) / 3;
-    seats.push(
-      `<rect x="${x - 3}" y="${-t.height / 2 - 6}" width="6" height="3" rx="1"/><rect x="${x - 3}" y="${t.height / 2 + 3}" width="6" height="3" rx="1"/>`,
-    );
+  const top = Math.ceil(Math.min(t.capacity, 8) / 2);
+  const bottom = Math.floor(Math.min(t.capacity, 8) / 2);
+  for (const [amount, y] of [
+    [top, -t.height / 2 - 6],
+    [bottom, t.height / 2 + 2],
+  ]) {
+    for (let i = 0; i < amount; i++) {
+      const x =
+        amount === 1
+          ? 0
+          : -t.width / 2 + 8 + (i * (t.width - 16)) / (amount - 1);
+      seats.push(
+        `<rect class="map-seat ${seats.length < count ? "occupied" : ""}" x="${x - 4}" y="${y}" width="8" height="4" rx="1"/>`,
+      );
+    }
   }
-  seats.push(
-    `<rect x="${-t.width / 2 - 6}" y="-4" width="3" height="8" rx="1"/><rect x="${t.width / 2 + 3}" y="-4" width="3" height="8" rx="1"/>`,
-  );
+  if (t.capacity >= 9)
+    seats.push(
+      `<rect class="map-seat ${seats.length < count ? "occupied" : ""}" x="${-t.width / 2 - 6}" y="-4" width="4" height="8" rx="1"/>`,
+    );
+  if (t.capacity >= 10)
+    seats.push(
+      `<rect class="map-seat ${seats.length < count ? "occupied" : ""}" x="${t.width / 2 + 2}" y="-4" width="4" height="8" rx="1"/>`,
+    );
   let label = t.name;
   if ((t.rotation === 90 || t.rotation === 270) && /^Mesa \d+$/.test(label))
     label = label.replace("Mesa ", "M");
@@ -96,6 +111,9 @@ export function boardContents(
       : defaultGarden();
   return (
     symbols +
+    (editing && !editor
+      ? `<defs><pattern id="table-grid" width="${TABLE_GRID}" height="${TABLE_GRID}" patternUnits="userSpaceOnUse"><circle cx="0" cy="0" r=".55"/></pattern></defs><rect class="table-grid" width="100%" height="100%" fill="url(#table-grid)"/>`
+      : "") +
     `<g class="garden-background">${[...elements]
       .sort(
         (a, b) => (a.kind === "grass" ? 0 : 1) - (b.kind === "grass" ? 0 : 1),
@@ -107,5 +125,5 @@ export function boardContents(
   );
 }
 export function board(state, options = {}) {
-  return `<svg id="map-canvas" class="map-surface ${options.editor ? "garden-design-surface" : ""}" viewBox="0 0 ${WORLD.width} ${WORLD.height}" role="group" aria-label="${options.editor ? "Lienzo de diseño del jardín" : "Mesas y orientación del jardín"}">${boardContents(state, options)}</svg>`;
+  return `<svg id="map-canvas" class="map-surface ${options.editor ? "garden-design-surface" : ""}" viewBox="0 0 ${WORLD.width} ${WORLD.height}" preserveAspectRatio="none" role="group" aria-label="${options.editor ? "Lienzo de diseño del jardín" : "Mesas y orientación del jardín"}">${boardContents(state, options)}</svg>`;
 }

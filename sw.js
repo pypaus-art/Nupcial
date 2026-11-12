@@ -1,6 +1,6 @@
 const BASE = self.registration.scope;
 const PREFIX = `nupcial-shell-${new URL(BASE).pathname}-`;
-const CACHE = `${PREFIX}v2026-11-12-5`;
+const CACHE = `${PREFIX}v2026-11-12-6`;
 const ASSETS = [
   "/",
   "/index.html",

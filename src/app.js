@@ -16,6 +16,8 @@ import { icon } from "./icons.js";
 import { board, boardContents } from "./garden-view.js";
 import {
   WORLD,
+  TABLE_GRID,
+  snapTable,
   KINDS,
   tableSpaceFree,
   clampPosition,
@@ -51,7 +53,6 @@ let state,
   editing = false,
   filter = "all",
   query = "",
-  selectedGuest = null,
   dialogRevision = 0,
   installPrompt,
   nextRouteFilter = null;
@@ -107,6 +108,11 @@ function error(message) {
   const el = $("#form-error");
   if (dialog.open && el) {
     el.textContent = message;
+    if (formChanged(dialog.querySelector("form")))
+      el.insertAdjacentHTML(
+        "beforeend",
+        '<div class="inline-actions"><button type="button" class="secondary" data-action="form-discard">Descartar borrador</button></div>',
+      );
     el.scrollIntoView({ block: "nearest" });
   } else toast(message);
 }
@@ -246,6 +252,14 @@ let navigationSequence = 0;
 async function routeTo() {
   const sequence = ++navigationSequence;
   const next = location.hash.slice(1) || "home";
+  if (dialog.open) {
+    if (!(await requestDialogClose())) {
+      if (sequence === navigationSequence)
+        history.replaceState(null, "", `#${route}`);
+      return;
+    }
+    if (sequence !== navigationSequence) return;
+  }
   if (route === "garden" && next !== "garden") {
     if (!(await saveGarden()) || sequence !== navigationSequence) {
       if (sequence === navigationSequence)
@@ -277,7 +291,6 @@ async function routeTo() {
   query = "";
   filter = nextRouteFilter || "all";
   nextRouteFilter = null;
-  if (dialog.open) dialog.close();
   inkTransition(() => {
     render();
     window.scrollTo(0, 0);
@@ -316,6 +329,7 @@ function render() {
     "canvas-open",
     ["map", "garden"].includes(route),
   );
+  document.body.classList.toggle("home-open", route === "home");
   main.dataset.route = route;
   main.innerHTML = {
     home: homePage,
@@ -401,9 +415,9 @@ function agendaPage() {
       ["all", "Todo"],
       ["pending", "Pendiente"],
       ["active", "En curso"],
-      ["done", "Listo"],
+      ["done", "Finalizado"],
     ]) +
-    `<div class="list">${entries.map((a) => `<button class="list-row agenda-row" data-open="agenda" data-id="${esc(a.id)}"><div class="agenda-time">${a.start}<small>${a.end || "por definir"}</small></div><div class="row-content"><div class="row-title">${esc(a.title)}</div>${a.personId || a.location ? `<div class="row-meta">${esc([a.personId ? personName(a.personId) : null, a.location].filter(Boolean).join(" · "))}</div>` : ""}${a.endNote ? `<p class="row-meta">${esc(a.endNote)}</p>` : ""}${a.status !== "pending" ? `<span class="pill">${labels[a.status]}</span>` : ""}</div>${icon("chevron", "chevron")}</button>`).join("") || empty("Sin actividades", "No hay actividades con este estado.", "new-agenda", "Agregar actividad", "calendar")}</div>`
+    `<div class="list">${entries.map((a) => `<button class="list-row agenda-row" data-open="agenda" data-id="${esc(a.id)}"><div class="agenda-time">${a.start}<small><span>${a.end || "por definir"}</span>${a.status === "done" ? `<span class="agenda-finished" aria-label="Finalizado">${icon("circle-check")}</span>` : ""}</small></div><div class="row-content"><div class="row-title">${esc(a.title)}</div>${a.personId || a.location ? `<div class="row-meta">${esc([a.personId ? personName(a.personId) : null, a.location].filter(Boolean).join(" · "))}</div>` : ""}${a.endNote ? `<p class="row-meta">${esc(a.endNote)}</p>` : ""}${a.status === "active" ? `<span class="pill">${labels[a.status]}</span>` : ""}</div>${icon("chevron", "chevron")}</button>`).join("") || empty("Sin actividades", "No hay actividades con este estado.", "new-agenda", "Agregar actividad", "calendar")}</div>`
   );
 }
 function tasksPage() {
@@ -421,9 +435,9 @@ function tasksPage() {
       ["all", "Todas"],
       ["pending", "Pendientes"],
       ["doing", "En curso"],
-      ["done", "Listas"],
+      ["done", "Terminadas"],
     ]) +
-    `<div class="list">${tasks.map((t) => `<button class="list-row" data-open="tasks" data-id="${esc(t.id)}"><span class="status-icon ${t.priority}" aria-label="Prioridad ${t.priority === "urgent" ? "urgente" : "normal"}">${icon(t.priority === "urgent" ? "urgent" : "circle")}</span><div class="row-content"><div class="row-title">${esc(t.title)}</div><div class="row-meta">${!t.personId ? `<span class="unassigned-marker">${icon("unassigned")}Sin responsable</span>` : esc(personName(t.personId))}${t.due ? " · " + esc(t.due) : ""}</div></div>${icon("chevron", "chevron")}</button>`).join("") || empty("Una cosa a la vez", "Anota lo que falta y asígnalo a la persona indicada.", "new-tasks", "Agregar tarea", "tasks")}</div>`
+    `<div class="list">${tasks.map((t) => `<button class="list-row" data-open="tasks" data-id="${esc(t.id)}"><span class="task-status" aria-label="${t.status === "done" ? "Terminada" : labels[t.status]}"><span class="status-icon ${t.priority}" aria-label="${t.status === "done" ? "Terminada" : `Prioridad ${t.priority === "urgent" ? "urgente" : "normal"}`}">${icon(t.status === "done" ? "circle-check" : t.priority === "urgent" ? "urgent" : "circle")}</span><span class="task-steps" aria-hidden="true">${[1, 2, 3].map((step) => `<i class="${step <= (t.status === "done" ? 3 : t.status === "doing" ? 2 : 1) ? "filled" : ""}"></i>`).join("")}</span></span><div class="row-content"><div class="row-title">${esc(t.title)}</div><div class="row-meta">${!t.personId ? `<span class="unassigned-marker">${icon("unassigned")}Sin responsable</span>` : esc(personName(t.personId))}${t.due ? " · " + esc(t.due) : ""}</div></div>${icon("chevron", "chevron")}</button>`).join("") || empty("Una cosa a la vez", "Anota lo que falta y asígnalo a la persona indicada.", "new-tasks", "Agregar tarea", "tasks")}</div>`
   );
 }
 function guestsPage() {
@@ -517,14 +531,8 @@ function morePage() {
     ],
   ];
   return (
-    heading("Más", "Todo lo demás, a mano") +
-    links
-      .map(
-        ([key, ico, title, sub]) =>
-          `<button class="menu-row" data-go="${key}">${icon(ico)}<div class="row-content">${title}<small>${sub}</small></div>${icon("chevron", "chevron")}</button>`,
-      )
-      .join("") +
-    `<button class="menu-row" data-action="toggle-sounds" aria-pressed="${soundEnabled()}">${icon(soundEnabled() ? "sound" : "muted")}<div class="row-content">Sonidos suaves<small>${soundEnabled() ? "Activados" : "Silenciados"}</small></div><span class="switch-track" aria-hidden="true"><i></i></span></button>` +
+    heading("Más") +
+    `<div class="more-bento">${links.map(([key, ico, title, sub]) => `<button class="menu-tile" data-go="${key}">${icon(ico)}<span>${title}</span><small>${sub}</small></button>`).join("")}<button class="menu-tile" data-action="toggle-sounds" aria-pressed="${soundEnabled()}">${icon(soundEnabled() ? "sound" : "muted")}<span>Sonidos suaves</span><small>${soundEnabled() ? "Activados" : "Silenciados"}</small><span class="switch-track" aria-hidden="true"><i></i></span></button></div>` +
     notes(
       "Esta versión guarda los datos únicamente en este navegador. Compartir su dirección no comparte tus registros.",
     )
@@ -706,6 +714,7 @@ function transformTable({ rotationDelta = 0, delta = 0 }) {
         height: Math.round((width * 9) / 16),
         rotation: (t.rotation + rotationDelta) % 360,
       };
+      Object.assign(value, clampPosition(value, value.x, value.y));
       await change(
         { type: "save", collection: "tables", value },
         { close: false },
@@ -891,9 +900,14 @@ function backupPage() {
 }
 function modal(content) {
   const opening = !dialog.open;
+  clearTimeout(tableNameTimer);
   dialogRevision = state.revision;
   $("#dialog-content").innerHTML =
     content + `<p class="form-error" id="form-error" role="alert"></p>`;
+  for (const form of dialog.querySelectorAll("form")) {
+    form.dataset.initial = formSignature(form);
+    formBaselines.set(form, structuredClone(formRecord(form, state)));
+  }
   if (!dialog.open) dialog.showModal();
   if (opening) enter(dialog);
 }
@@ -943,7 +957,8 @@ const personSelect = (value) =>
   );
 const actions = (collection, entityId) =>
   `<div class="form-actions">${entityId ? `<button type="button" class="danger" data-delete="${collection}" data-id="${esc(entityId)}" aria-label="Eliminar ${collection === "guests" ? "invitado" : collection === "tables" ? "mesa" : "registro"}">${icon("trash")}</button>` : ""}<button type="submit" class="primary">Guardar cambios</button></div>`;
-const enumOptions = (list) => list.map((v) => [v, labels[v]]);
+const enumOptions = (list, doneLabel = labels.done) =>
+  list.map((v) => [v, v === "done" ? doneLabel : labels[v]]);
 function addGuests() {
   modal(
     `<h2>Agregar invitados</h2><form id="guest-bulk"><label class="field"><textarea name="names" aria-label="Nombres de invitados, uno por línea" placeholder="Nombre del invitado" rows="7" maxlength="200000" required></textarea></label><div id="duplicate-report"></div><div class="form-actions"><button type="submit" class="primary">Agregar invitados</button></div></form>`,
@@ -1009,7 +1024,7 @@ function openEntity(collection, entityId) {
         "Estado",
         "status",
         v.status || "pending",
-        enumOptions(["pending", "doing", "done"]),
+        enumOptions(["pending", "doing", "done"], "Terminada"),
       ) +
       field("Fecha límite", "due", v.due, "date", true) +
       textarea("Descripción", "description", v.description);
@@ -1040,7 +1055,7 @@ function openEntity(collection, entityId) {
         "Estado",
         "status",
         v.status || "pending",
-        enumOptions(["pending", "active", "done"]),
+        enumOptions(["pending", "active", "done"], "Finalizado"),
       ) +
       textarea("Descripción", "description", v.description) +
       textarea("Notas", "notes", v.notes);
@@ -1093,16 +1108,15 @@ function paymentForm(vendorId) {
 function openTable(tableId) {
   const t = state.tables.find((t) => t.id === tableId);
   if (!t) return;
-  selectedGuest = null;
   const assigned = state.assignments.filter((a) => a.tableId === tableId);
   modal(
-    `<form id="table-name-form" data-id="${esc(t.id)}"><div class="table-title"><input name="name" class="title-input" aria-label="Nombre de la mesa" value="${esc(t.name)}" maxlength="160" required>${button("capacity-down", "Disminuir lugares", "minus", "icon-button", `data-id="${esc(t.id)}" ${t.capacity <= Math.max(1, assigned.length) ? "disabled" : ""}`)}<span class="seat-count" aria-label="Lugares">${t.capacity}</span>${button("capacity-up", "Aumentar lugares", "plus", "icon-button", `data-id="${esc(t.id)}" ${t.capacity >= 10 ? "disabled" : ""}`)}</div><div class="seat-icons" aria-label="${assigned.length} ocupados de ${t.capacity} lugares">${Array.from({ length: t.capacity }, (_, i) => icon("person", i < assigned.length ? "occupied" : "")).join("")}</div><button class="quiet-link" type="submit">Guardar nombre</button></form><div class="search-inline"><label class="search">${icon("search")}<input id="table-search" aria-label="Buscar invitado para asignar" placeholder="Buscar invitado" autocomplete="off"></label>${button("unassigned-list", "Ver invitados sin mesa", "list", "icon-button", `data-id="${esc(t.id)}"`)}${button("assign-guest", "Asignar invitado seleccionado", "plus", "icon-button", `id="assign-button" data-id="${esc(t.id)}" disabled`)}</div><div id="table-results" class="results"></div><div id="table-assigned">${
+    `<form id="table-name-form" data-id="${esc(t.id)}"><div class="table-title"><input name="name" class="title-input" aria-label="Nombre de la mesa" value="${esc(t.name)}" maxlength="160" required>${button("capacity-down", "Disminuir lugares", "minus", "icon-button", `data-id="${esc(t.id)}" ${t.capacity <= Math.max(1, assigned.length) ? "disabled" : ""}`)}<span class="seat-count" aria-label="Lugares">${t.capacity}</span>${button("capacity-up", "Aumentar lugares", "plus", "icon-button", `data-id="${esc(t.id)}" ${t.capacity >= 10 ? "disabled" : ""}`)}</div><div class="seat-icons" aria-label="${assigned.length} ocupados de ${t.capacity} lugares">${Array.from({ length: t.capacity }, (_, i) => icon("person", i < assigned.length ? "occupied" : "")).join("")}</div></form><div class="search-inline"><label class="search">${icon("search")}<input id="table-search" aria-label="Buscar invitado para asignar" placeholder="Buscar invitado" autocomplete="off"></label>${button("unassigned-list", "Ver invitados sin mesa", "list", "icon-button", `data-id="${esc(t.id)}"`)}</div><div id="table-results" class="results"></div><div id="table-assigned" role="region" aria-label="Invitados de esta mesa">${
       assigned
         .map((a) => {
           const g = state.guests.find((g) => g.id === a.guestId);
           return `<div class="assignment-row"><span>${esc(g.name)}</span>${button("release-guest", `Liberar a ${g.name}`, "minus", "icon-button", `data-id="${esc(g.id)}" data-table-id="${esc(t.id)}"`)}</div>`;
         })
-        .join("") || '<p class="row-meta">Los lugares están disponibles.</p>'
+        .join("") || '<p class="row-meta">Lugares disponibles</p>'
     }</div><div class="form-actions"><button class="danger" data-delete="tables" data-id="${esc(t.id)}">${icon("trash")}Eliminar mesa</button></div>`,
   );
   dialog.dataset.tableId = t.id;
@@ -1110,6 +1124,14 @@ function openTable(tableId) {
 function tableSearch(all = false) {
   const q = normalize($("#table-search")?.value || "");
   const t = dialog.dataset.tableId;
+  const table = state.tables.find((x) => x.id === t);
+  if (
+    table &&
+    state.assignments.filter((a) => a.tableId === t).length >= table.capacity
+  ) {
+    $("#table-results").innerHTML = '<p class="row-meta">Mesa completa.</p>';
+    return;
+  }
   const results = state.guests
     .filter(
       (g) => (all || q) && normalize(g.name).includes(q) && !tableFor(g.id),
@@ -1119,7 +1141,7 @@ function tableSearch(all = false) {
     results
       .map(
         (g) =>
-          `<button type="button" class="result" data-select-guest="${esc(g.id)}" aria-pressed="${selectedGuest === g.id}">${esc(g.name)}</button>`,
+          `<button type="button" class="result" data-select-guest="${esc(g.id)}">${esc(g.name)}</button>`,
       )
       .join("") ||
     (q || all
@@ -1251,15 +1273,170 @@ async function restoreBackup() {
     error(e.message);
   }
 }
-// Forms share one persistence boundary: UI only updates after the IDB transaction commits.
-document.addEventListener("submit", async (e) => {
-  const form = e.target;
-  if (!form.matches("form")) return;
-  e.preventDefault();
-  const fd = new FormData(form),
-    raw = Object.fromEntries(fd),
-    entityId = form.dataset.id;
+const formBaselines = new WeakMap();
+function formRecord(form, s) {
+  const key = form.dataset.id;
+  if (form.id === "entity-form")
+    return {
+      record: s[form.dataset.collection].find((x) => x.id === key) || null,
+      ...(form.dataset.collection === "guests"
+        ? {
+            tableId:
+              s.assignments.find((a) => a.guestId === key)?.tableId || null,
+          }
+        : {}),
+    };
+  if (form.id === "vendor-form")
+    return s.vendors.find((x) => x.id === key) || null;
+  if (form.id === "table-name-form") {
+    const t = s.tables.find((x) => x.id === key);
+    return t ? { id: t.id, name: t.name } : null;
+  }
+  if (form.id === "event-form") return s.event;
+  return null;
+}
+function showFormConflict(form, removed = false) {
+  const el = $("#form-error");
+  if (el)
+    el.innerHTML = `${removed ? "Este registro se eliminó en otra pestaña." : "Este registro cambió en otra pestaña."} Tu edición sigue aquí.<div class="inline-actions">${removed ? "" : '<button type="button" class="secondary" data-action="form-overwrite">Guardar mi versión</button>'}<button type="button" class="secondary" data-action="form-discard">Descartar mi edición</button></div>`;
+}
+async function refreshFormContext(form, force = false) {
+  const latest = await load();
+  const original = formBaselines.get(form),
+    current = formRecord(form, latest);
+  const deleted =
+    !!form.dataset.id &&
+    !!original &&
+    (form.id === "entity-form" ? !current.record : !current);
+  state = latest;
+  if (
+    deleted ||
+    (!force &&
+      formChanged(form) &&
+      JSON.stringify(original) !== JSON.stringify(current))
+  ) {
+    showFormConflict(form, deleted);
+    return false;
+  }
+  dialogRevision = latest.revision;
+  formBaselines.set(form, structuredClone(current));
+  return true;
+}
+async function changeForm(form, action, options = {}) {
+  const ok = await change(action, { expected: dialogRevision, ...options });
+  if (!ok && state.revision !== dialogRevision) {
+    if (await refreshFormContext(form))
+      error("Tu edición sigue aquí. Vuelve a guardar para reintentar.");
+  }
+  return ok;
+}
+// One transaction per submitted form. Closing a sheet uses this same boundary.
+const formSaves = new WeakMap();
+const formSignature = (form) => JSON.stringify([...new FormData(form)]);
+const formChanged = (form) =>
+  !!form && formSignature(form) !== form.dataset.initial;
+let dialogCloseWork = null,
+  tableNameTimer,
+  tableDialogWork = Promise.resolve(true);
+function tableNameValid(form) {
+  if (form.checkValidity() && form.elements.name.value.trim()) return true;
+  error("Escribe un nombre para guardar la mesa.");
+  form.reportValidity();
+  form.elements.name.focus();
+  return false;
+}
+async function persistTableName(form) {
+  if (!form.isConnected || !formChanged(form)) return true;
+  if (!(await refreshFormContext(form))) return false;
+  const name = form.elements.name.value;
+  const t = state.tables.find((t) => t.id === form.dataset.id);
+  if (!t) {
+    error("La mesa ya no existe. Tu texto sigue aquí.");
+    return false;
+  }
+  if (name === t.name) {
+    form.dataset.initial = formSignature(form);
+    return true;
+  }
+  if (!tableNameValid(form)) return false;
+  const ok = await changeForm(
+    form,
+    { type: "save", collection: "tables", value: { ...t, name } },
+    { close: false },
+  );
+  if (ok) {
+    dialogRevision = state.revision;
+    form.dataset.initial = JSON.stringify([["name", name]]);
+    formBaselines.set(form, { id: t.id, name });
+  }
+  return ok;
+}
+function saveTableName(form) {
+  clearTimeout(tableNameTimer);
+  tableDialogWork = tableDialogWork
+    .then(() => persistTableName(form))
+    .catch((e) => {
+      error(e.message);
+      return false;
+    });
+  return tableDialogWork;
+}
+function tableAction(action) {
+  if (dialogCloseWork) return Promise.resolve(false);
+  const form = $("#table-name-form"),
+    tableId = form?.dataset.id;
+  if (!form) return Promise.resolve(false);
+  clearTimeout(tableNameTimer);
+  tableDialogWork = tableDialogWork
+    .then(async () => {
+      if (
+        !form.isConnected ||
+        !(await refreshFormContext(form)) ||
+        !(await persistTableName(form))
+      )
+        return false;
+      const t = state.tables.find((t) => t.id === tableId);
+      if (!t) return false;
+      const ok = await changeForm(form, action(t), { close: false });
+      if (ok) openTable(tableId);
+      return ok;
+    })
+    .catch((e) => {
+      error(e.message);
+      return false;
+    });
+  return tableDialogWork;
+}
+async function saveForm(form) {
+  if (form.id === "table-name-form") return saveTableName(form);
+  if (formSaves.has(form)) return formSaves.get(form);
+  if (!formChanged(form)) {
+    state = await load();
+    await leave(dialog);
+    render();
+    return true;
+  }
+  if (!form.checkValidity()) {
+    error("Completa los campos marcados para guardar.");
+    form.reportValidity();
+    return false;
+  }
+  const work = persistForm(form);
+  formSaves.set(form, work);
   try {
+    return await work;
+  } finally {
+    formSaves.delete(form);
+  }
+}
+async function persistForm(form) {
+  form.inert = true;
+  form.setAttribute("aria-busy", "true");
+  try {
+    if (!(await refreshFormContext(form))) return false;
+    const fd = new FormData(form),
+      raw = Object.fromEntries(fd),
+      entityId = form.dataset.id;
     if (form.id === "guest-bulk") {
       const { added, duplicates } = importNames(state, raw.names, false);
       if (duplicates.length) {
@@ -1267,7 +1444,8 @@ document.addEventListener("submit", async (e) => {
           `<div class="notice-box">${duplicates.length} nombres coinciden y no se agregarán automáticamente.<p>${duplicates.map(esc).join(", ")}</p><label class="check-field"><input type="checkbox" name="homonyms">Confirmo que los nombres coincidentes son personas distintas (homónimos).</label></div>`;
         if (!fd.has("homonyms")) {
           if (added.length) {
-            const ok = await change(
+            const ok = await changeForm(
+              form,
               { type: "guests", guests: added },
               { close: false, expected: dialogRevision },
             );
@@ -1279,7 +1457,7 @@ document.addEventListener("submit", async (e) => {
               );
             }
           }
-          return;
+          return false;
         }
       }
       const result = fd.has("homonyms")
@@ -1287,15 +1465,17 @@ document.addEventListener("submit", async (e) => {
         : { added };
       if (!result.added.length)
         throw new Error("No hay nombres nuevos para agregar.");
-      await change(
+      return await changeForm(
+        form,
         { type: "guests", guests: result.added },
         { expected: dialogRevision },
       );
-    } else if (form.id === "entity-form") {
+    }
+    if (form.id === "entity-form") {
       const collection = form.dataset.collection;
       let value = {
         ...state[collection].find((x) => x.id === entityId),
-        id: entityId || id(),
+        id: entityId || (form.dataset.recordId ||= id()),
         ...raw,
       };
       if (["tasks", "agenda", "contingencies"].includes(collection))
@@ -1304,58 +1484,88 @@ document.addEventListener("submit", async (e) => {
       if (collection === "guests") {
         const tableId = raw.tableId || null;
         delete value.tableId;
-        await change(
+        return await changeForm(
+          form,
           { type: "guestUpdate", value, tableId },
           { expected: dialogRevision },
         );
-      } else
-        await change(
-          { type: "save", collection, value },
-          { expected: dialogRevision },
-        );
-    } else if (form.id === "vendor-form") {
+      }
+      return await changeForm(
+        form,
+        { type: "save", collection, value },
+        { expected: dialogRevision },
+      );
+    }
+    if (form.id === "vendor-form") {
       const value = {
-        id: entityId || id(),
+        id: entityId || (form.dataset.recordId ||= id()),
         ...raw,
         total: amountCents(raw.total),
         refundable: fd.has("refundable"),
       };
-      await change(
+      return await changeForm(
+        form,
         { type: "save", collection: "vendors", value },
         { expected: dialogRevision },
       );
-    } else if (form.id === "payment-form") {
+    }
+    if (form.id === "payment-form") {
       const value = {
-        id: id(),
+        id: (form.dataset.recordId ||= id()),
         vendorId: entityId,
         amount: amountCents(raw.amount),
         concept: raw.concept,
         date: raw.date,
       };
-      await change(
+      return await changeForm(
+        form,
         { type: "save", collection: "payments", value },
         { expected: dialogRevision },
       );
-    } else if (form.id === "table-name-form") {
-      const t = state.tables.find((t) => t.id === entityId);
-      if (
-        await change(
-          {
-            type: "save",
-            collection: "tables",
-            value: { ...t, name: raw.name },
-          },
-          { close: false, expected: dialogRevision },
-        )
-      ) {
-        dialogRevision = state.revision;
-        toast("Nombre de mesa guardado");
-      }
-    } else if (form.id === "event-form")
-      await change({ type: "event", value: raw }, { expected: dialogRevision });
-  } catch (err) {
-    error(err.message);
+    }
+    if (form.id === "event-form")
+      return await changeForm(
+        form,
+        { type: "event", value: raw },
+        { expected: dialogRevision },
+      );
+    return true;
+  } catch (e) {
+    error(e.message);
+    return false;
+  } finally {
+    form.inert = false;
+    form.removeAttribute("aria-busy");
   }
+}
+async function requestDialogClose() {
+  if (!dialog.open) return true;
+  if (dialogCloseWork) return dialogCloseWork;
+  const work = (async () => {
+    await tableDialogWork;
+    const form = dialog.querySelector("form");
+    if (form?.id === "table-name-form") {
+      if (!(await saveTableName(form))) return false;
+    } else if (form && (formChanged(form) || formSaves.has(form))) {
+      if (!(await saveForm(form))) return false;
+    }
+    if (dialog.open) await leave(dialog);
+    return true;
+  })();
+  dialogCloseWork = work;
+  try {
+    return await work;
+  } catch (e) {
+    error(e.message);
+    return false;
+  } finally {
+    dialogCloseWork = null;
+  }
+}
+document.addEventListener("submit", (e) => {
+  if (!e.target.matches("form")) return;
+  e.preventDefault();
+  saveForm(e.target);
 });
 document.addEventListener("click", async (e) => {
   if (
@@ -1363,6 +1573,23 @@ document.addEventListener("click", async (e) => {
     performance.now() < suppressMapClickUntil
   )
     return;
+  const resolution = e.target.closest(
+    '[data-action="form-overwrite"],[data-action="form-discard"]',
+  );
+  if (resolution) {
+    const form = dialog.querySelector("form");
+    if (resolution.dataset.action === "form-discard") {
+      clearTimeout(tableNameTimer);
+      form.dataset.initial = formSignature(form);
+      await leave(dialog);
+      render();
+    } else if (await refreshFormContext(form, true)) {
+      $("#form-error").textContent = "";
+      if (form.id === "table-name-form") await saveTableName(form);
+      else await saveForm(form);
+    }
+    return;
+  }
   const go = e.target.closest("[data-go]");
   if (go) {
     nextRouteFilter = go.dataset.filterRoute || null;
@@ -1387,13 +1614,14 @@ document.addEventListener("click", async (e) => {
   }
   const chosen = e.target.closest("[data-select-guest]");
   if (chosen) {
-    selectedGuest = chosen.dataset.selectGuest;
-    $("#table-search").value = state.guests.find(
-      (g) => g.id === selectedGuest,
-    ).name;
-    $("#table-results").innerHTML =
-      `<button class="result" aria-pressed="true" data-select-guest="${esc(selectedGuest)}">${esc($("#table-search").value)}</button>`;
-    $("#assign-button").disabled = false;
+    if (
+      await tableAction(() => ({
+        type: "assign",
+        guestId: chosen.dataset.selectGuest,
+        tableId: dialog.dataset.tableId,
+      }))
+    )
+      $("#table-search")?.focus({ preventScroll: true });
     return;
   }
   const object = e.target.closest("[data-garden-object]");
@@ -1462,42 +1690,21 @@ document.addEventListener("click", async (e) => {
   } else if (action === "add-table") {
     await change({ type: "createTable" });
   } else if (action.startsWith("capacity-")) {
-    const t = state.tables.find((t) => t.id === entityId);
-    if (
-      await change(
-        {
-          type: "save",
-          collection: "tables",
-          value: {
-            ...t,
-            capacity: t.capacity + (action === "capacity-up" ? 1 : -1),
-          },
-        },
-        { close: false, expected: dialogRevision },
-      )
-    )
-      openTable(entityId);
+    await tableAction((t) => {
+      const value = {
+        ...t,
+        capacity: t.capacity + (action === "capacity-up" ? 1 : -1),
+      };
+      Object.assign(value, clampPosition(value, value.x, value.y));
+      return { type: "save", collection: "tables", value };
+    });
   } else if (action === "unassigned-list") tableSearch(true);
-  else if (action === "assign-guest") {
-    if (!selectedGuest) {
-      error("Selecciona un invitado primero.");
-      return;
-    }
-    if (
-      await change(
-        { type: "assign", guestId: selectedGuest, tableId: entityId },
-        { close: false, expected: dialogRevision },
-      )
-    )
-      openTable(entityId);
-  } else if (action === "release-guest") {
-    if (
-      await change(
-        { type: "assign", guestId: entityId, tableId: null },
-        { close: false, expected: dialogRevision },
-      )
-    )
-      openTable(b.dataset.tableId);
+  else if (action === "release-guest") {
+    await tableAction(() => ({
+      type: "assign",
+      guestId: entityId,
+      tableId: null,
+    }));
   } else if (action === "backup-export") exportBackup();
   else if (action === "migration-export") {
     const previous = await recovery("before-migration-v2");
@@ -1528,11 +1735,13 @@ document.addEventListener("input", (e) => {
     query = e.target.value;
     if (route === "guests") $("#guest-list").innerHTML = guestList();
   }
-  if (e.target.id === "table-search") {
-    selectedGuest = null;
-    $("#assign-button").disabled = true;
-    tableSearch();
+  if (e.target.form?.id === "table-name-form" && e.target.name === "name") {
+    clearTimeout(tableNameTimer);
+    const form = e.target.form;
+    if (e.target.value.trim())
+      tableNameTimer = setTimeout(() => saveTableName(form), 250);
   }
+  if (e.target.id === "table-search") tableSearch();
 });
 document.addEventListener("change", (e) => {
   if (e.target.id === "garden-label") {
@@ -1542,10 +1751,10 @@ document.addEventListener("change", (e) => {
   if (e.target.id === "backup-file") inspectBackup(e.target.files[0]);
 });
 $(".close-dialog").innerHTML = icon("close");
-$(".close-dialog").onclick = () => leave(dialog);
+$(".close-dialog").onclick = () => requestDialogClose();
 dialog.addEventListener("cancel", (e) => {
   e.preventDefault();
-  leave(dialog);
+  requestDialogClose();
 });
 dialog.addEventListener("click", (e) => {
   if (e.target === dialog) {
@@ -1556,7 +1765,7 @@ dialog.addEventListener("click", (e) => {
       e.clientY < r.top ||
       e.clientY > r.bottom
     )
-      leave(dialog);
+      requestDialogClose();
   }
 });
 // Capture on the stable SVG root, never a child replaced by selection controls.
@@ -1634,7 +1843,7 @@ document.addEventListener("pointermove", (e) => {
     applyGardenCamera();
     return;
   }
-  const position = clampPosition(
+  const position = (drag.isObject ? clampPosition : snapTable)(
     drag.item,
     drag.item.x + point.x - drag.start.x,
     drag.item.y + point.y - drag.start.y,
@@ -1709,8 +1918,8 @@ document.addEventListener("keydown", async (e) => {
   const item = isObject
     ? gardenDraft.elements.find((x) => x.id === el.dataset.gardenObject)
     : state.tables.find((x) => x.id === el.dataset.table);
-  const step = e.shiftKey ? 1 : isObject ? 2 : 4;
-  const position = clampPosition(
+  const step = isObject ? (e.shiftKey ? 1 : 2) : TABLE_GRID;
+  const position = (isObject ? clampPosition : snapTable)(
     item,
     item.x +
       (e.key === "ArrowRight" ? step : e.key === "ArrowLeft" ? -step : 0),
@@ -1729,7 +1938,10 @@ document.addEventListener("keydown", async (e) => {
   }
 });
 window.addEventListener("beforeunload", (e) => {
-  if (gardenDirty) {
+  if (
+    gardenDirty ||
+    (dialog.open && formChanged(dialog.querySelector("form")))
+  ) {
     e.preventDefault();
     e.returnValue = "";
   }

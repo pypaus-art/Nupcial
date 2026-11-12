@@ -34,6 +34,7 @@ const paths = {
     '<circle cx="9" cy="7" r="3"/><path d="M3 21v-4a6 6 0 0 1 10-4m3-3a2.5 2.5 0 1 1 4 2c-1 .7-2 1-2 3m0 3h.01"/>',
   circle: '<circle cx="12" cy="12" r="8"/>',
   urgent: '<path d="m12 3 10 18H2zM12 9v5m0 3h.01"/>',
+  "circle-check": '<circle cx="12" cy="12" r="9"/><path d="m7.5 12 3 3 6-6"/>',
   check: '<path d="m5 12 4 4L19 6"/>',
   search: '<circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/>',
   wallet:

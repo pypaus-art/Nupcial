@@ -73,7 +73,7 @@ export function tone(kind = "success") {
       kind === "error" ? 850 : kind === "success" ? 1550 : 1300;
     filter.Q.value = 0.65;
     gain.gain.setValueAtTime(0, at);
-    gain.gain.linearRampToValueAtTime(0.32, at + 0.0015);
+    gain.gain.linearRampToValueAtTime(0.36, at + 0.0015);
     gain.gain.exponentialRampToValueAtTime(0.0001, at + 0.026);
     source.connect(filter);
     filter.connect(gain);
