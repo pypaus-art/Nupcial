@@ -2592,19 +2592,6 @@ body.canvas-open {
   width: 20px;
   height: 20px;
 }
-.canvas-zoom {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex: 0 0 44px;
-  height: 44px;
-  gap: 6px;
-}
-#garden-zoom-value {
-  min-width: 72px;
-  border-radius: 12px;
-  font-variant-numeric: tabular-nums;
-}
 .garden-save-error:not(:empty) {
   position: absolute;
   inset: auto 8px 8px;

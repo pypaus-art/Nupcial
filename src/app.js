@@ -15,7 +15,6 @@ import { openDatabase, load, commit, recovery } from "./storage.js";
 import { icon } from "./icons.js";
 import { board, boardContents } from "./garden-view.js";
 import {
-  WORLD,
   WORLD_AREA,
   fitArea,
   TABLE_GRID,
@@ -595,7 +594,6 @@ let gardenDraft = null,
   gardenPaletteOpen = false,
   gardenSaveWork = Promise.resolve(true),
   gardenSaveTimer;
-const gardenCamera = { zoom: 1, x: WORLD.width / 2, y: WORLD.height / 2 };
 function selectedObject() {
   return gardenDraft?.elements.find((e) => e.id === gardenSelection);
 }
@@ -649,15 +647,13 @@ function fitMapViewport() {
     rect.width,
     rect.height,
   );
-  const key = `${route}:${rect.width}:${rect.height}`;
+  const key = `${rect.width}:${rect.height}`;
   if (key !== mapAreaKey || next.width > mapArea.width + 0.001) mapArea = next;
   mapAreaKey = key;
-  if (route === "garden") applyGardenCamera();
-  else
-    svg.setAttribute(
-      "viewBox",
-      `${mapArea.left} ${mapArea.top} ${mapArea.width} ${mapArea.height}`,
-    );
+  svg.setAttribute(
+    "viewBox",
+    `${mapArea.left} ${mapArea.top} ${mapArea.width} ${mapArea.height}`,
+  );
   const grid = svg.querySelector(".table-grid");
   if (grid)
     for (const [key, value] of Object.entries({
@@ -681,28 +677,6 @@ function mountMapViewport() {
   });
   mapResizeObserver.observe(svg);
 }
-function applyGardenCamera() {
-  const svg = $("#map-canvas");
-  if (!svg || route !== "garden") return;
-  const w = mapArea.width / gardenCamera.zoom,
-    h = mapArea.height / gardenCamera.zoom;
-  gardenCamera.x = Math.max(
-    mapArea.left + w / 2,
-    Math.min(mapArea.left + mapArea.width - w / 2, gardenCamera.x),
-  );
-  gardenCamera.y = Math.max(
-    mapArea.top + h / 2,
-    Math.min(mapArea.top + mapArea.height - h / 2, gardenCamera.y),
-  );
-  svg.setAttribute(
-    "viewBox",
-    `${gardenCamera.x - w / 2} ${gardenCamera.y - h / 2} ${w} ${h}`,
-  );
-  $("#garden-zoom-value").textContent =
-    `${Math.round(gardenCamera.zoom * 100)}%`;
-  $("[data-action=garden-zoom-out]").disabled = gardenCamera.zoom <= 1;
-  $("[data-action=garden-zoom-in]").disabled = gardenCamera.zoom >= 3;
-}
 function refreshGarden({ controls = true } = {}) {
   if (route !== "garden" || !$("#map-canvas")) return;
   $("#map-canvas").innerHTML = boardContents(state, {
@@ -725,15 +699,9 @@ function gardenPage() {
     gardenDirty = false;
     gardenStale = false;
     gardenPaletteOpen = false;
-    Object.assign(gardenCamera, {
-      zoom: 1,
-      x: WORLD.width / 2,
-      y: WORLD.height / 2,
-    });
   }
   // The header always reserves the same height; tools replace it instead of shrinking the canvas.
-  queueMicrotask(applyGardenCamera);
-  return `<div class="canvas-head" id="garden-controls">${editorControls()}</div><div class="garden garden-workspace">${board(state, { editor: true, draft: gardenDraft, selected: gardenSelection, showTables: false })}<div class="garden-save-error" id="garden-error" role="alert"></div></div><div class="canvas-zoom" aria-label="Zoom del jardín">${button("garden-zoom-out", "Alejar jardín", "minus", "icon-button", "disabled")}<button data-action="garden-zoom-fit" id="garden-zoom-value" aria-label="Ver jardín completo">100%</button>${button("garden-zoom-in", "Acercar jardín", "plus")}<span class="sr-only" id="garden-status" role="status">Guardado automáticamente</span></div>`;
+  return `<div class="canvas-head" id="garden-controls">${editorControls()}</div><div class="garden garden-workspace">${board(state, { editor: true, draft: gardenDraft, selected: gardenSelection, showTables: false })}<div class="garden-save-error" id="garden-error" role="alert"></div><span class="sr-only" id="garden-status" role="status">Guardado automáticamente</span></div>`;
 }
 function tableControls() {
   const t = state.tables.find((t) => t.id === selectedTable);
@@ -875,28 +843,6 @@ async function gardenAction(action, el) {
     refreshGarden();
     return;
   }
-  if (action.startsWith("garden-zoom-")) {
-    if (action === "garden-zoom-fit")
-      Object.assign(gardenCamera, {
-        zoom: 1,
-        x: WORLD.width / 2,
-        y: WORLD.height / 2,
-      });
-    else {
-      const selected = selectedObject();
-      if (selected && gardenCamera.zoom === 1)
-        Object.assign(gardenCamera, { x: selected.x, y: selected.y });
-      gardenCamera.zoom = Math.max(
-        1,
-        Math.min(
-          3,
-          gardenCamera.zoom + (action === "garden-zoom-in" ? 0.25 : -0.25),
-        ),
-      );
-    }
-    applyGardenCamera();
-    return;
-  }
   if (action === "garden-add") {
     const kind = el.dataset.kind,
       spec = KINDS[kind];
@@ -920,8 +866,6 @@ async function gardenAction(action, el) {
     gardenDraft.elements.push(item);
     gardenSelection = item.id;
     gardenPaletteOpen = false;
-    if (gardenCamera.zoom > 1)
-      Object.assign(gardenCamera, { x: item.x, y: item.y });
     refreshGarden();
     confirmVisual($(`[data-garden-object="${CSS.escape(item.id)}"]`));
     saveGarden();
@@ -1839,16 +1783,13 @@ document.addEventListener("pointerdown", (e) => {
   if (!svg || e.button !== 0 || drag || !(route === "garden" || editing))
     return;
   const el = e.target.closest("[data-table],[data-garden-object]");
-  const isObject = !!el?.hasAttribute("data-garden-object");
-  const pan = !el && route === "garden" && gardenCamera.zoom > 1;
-  if (!el && !pan) return;
-  if (el && (isObject ? route !== "garden" : !editing)) return;
-  const item = pan
-    ? null
-    : isObject
-      ? gardenDraft.elements.find((x) => x.id === el.dataset.gardenObject)
-      : state.tables.find((x) => x.id === el.dataset.table);
-  if (!pan && !item) return;
+  if (!el) return;
+  const isObject = el.hasAttribute("data-garden-object");
+  if (isObject ? route !== "garden" : !editing) return;
+  const item = isObject
+    ? gardenDraft.elements.find((x) => x.id === el.dataset.gardenObject)
+    : state.tables.find((x) => x.id === el.dataset.table);
+  if (!item) return;
   if (item) {
     if (isObject) {
       gardenSelection = item.id;
@@ -1868,7 +1809,6 @@ document.addEventListener("pointerdown", (e) => {
   drag = {
     svg,
     el,
-    pan,
     isObject,
     item: item && structuredClone(item),
     inverse,
@@ -1879,7 +1819,6 @@ document.addEventListener("pointerdown", (e) => {
     next: item && { x: item.x, y: item.y },
     active: false,
     revision: state.revision,
-    camera: { ...gardenCamera },
     area: { ...mapArea },
   };
   svg.setPointerCapture(e.pointerId);
@@ -1894,12 +1833,6 @@ document.addEventListener("pointermove", (e) => {
     return;
   drag.active = true;
   const point = worldPoint(e, drag.inverse);
-  if (drag.pan) {
-    gardenCamera.x = drag.camera.x - point.x + drag.start.x;
-    gardenCamera.y = drag.camera.y - point.y + drag.start.y;
-    applyGardenCamera();
-    return;
-  }
   const position = (drag.isObject ? clampPosition : snapTable)(
     drag.item,
     drag.item.x + point.x - drag.start.x,
@@ -1927,27 +1860,25 @@ async function endDrag(e) {
   if (d.svg.hasPointerCapture(e.pointerId))
     d.svg.releasePointerCapture(e.pointerId);
   suppressMapClickUntil = performance.now() + 350;
-  if (!d.pan) {
-    if (e.type === "pointercancel" || !d.active) {
-      if (d.isObject) refreshGarden();
-      else selectTable(d.item.id);
-    } else if (d.isObject) {
-      Object.assign(
-        gardenDraft.elements.find((x) => x.id === d.item.id),
-        d.next,
-      );
-      refreshGarden();
-      confirmVisual($(`[data-garden-object="${CSS.escape(d.item.id)}"]`));
-      tone("select");
-      await saveGarden();
-    } else if (d.next.x !== d.item.x || d.next.y !== d.item.y) {
-      await change(
-        { type: "move", id: d.item.id, ...d.next },
-        { close: false, expected: d.revision },
-      );
-      confirmVisual($(`[data-table="${CSS.escape(d.item.id)}"]`));
-    } else selectTable(d.item.id);
-  }
+  if (e.type === "pointercancel" || !d.active) {
+    if (d.isObject) refreshGarden();
+    else selectTable(d.item.id);
+  } else if (d.isObject) {
+    Object.assign(
+      gardenDraft.elements.find((x) => x.id === d.item.id),
+      d.next,
+    );
+    refreshGarden();
+    confirmVisual($(`[data-garden-object="${CSS.escape(d.item.id)}"]`));
+    tone("select");
+    await saveGarden();
+  } else if (d.next.x !== d.item.x || d.next.y !== d.item.y) {
+    await change(
+      { type: "move", id: d.item.id, ...d.next },
+      { close: false, expected: d.revision },
+    );
+    confirmVisual($(`[data-table="${CSS.escape(d.item.id)}"]`));
+  } else selectTable(d.item.id);
   if (externalUpdatePending) {
     externalUpdatePending = false;
     await syncExternal();
