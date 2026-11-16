@@ -2922,3 +2922,116 @@ body.home-open {
 .map-page .garden-background :is(.kind-tree, .kind-grass, .kind-bush) {
   opacity: 0.5;
 }
+
+/* Shared-event settings extend the approved paper and ink components. */
+.team-panel {
+  background: var(--paper);
+  border-radius: 26px 26px 26px 12px;
+  padding: 20px;
+  margin-bottom: 10px;
+  min-width: 0;
+}
+.team-panel h2 {
+  font-size: 22px;
+  margin: 0 0 12px;
+}
+.team-panel p {
+  line-height: 1.45;
+}
+.team-panel form {
+  display: grid;
+  gap: 14px;
+  margin-top: 14px;
+}
+.team-panel .field {
+  min-width: 0;
+}
+.team-panel input,
+.team-panel select {
+  max-width: 100%;
+}
+.team-panel summary {
+  cursor: pointer;
+  padding: 12px 0;
+}
+.team-status-line {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.team-status-line > div {
+  flex: 1;
+  min-width: 0;
+}
+.team-status-line strong,
+.team-member strong {
+  overflow-wrap: anywhere;
+}
+.team-status-line > svg {
+  flex-shrink: 0;
+}
+.team-member {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  padding: 14px 0;
+  border-top: 1px solid var(--line);
+}
+.team-member > div,
+.team-member > span {
+  min-width: 0;
+  flex: 1;
+  overflow-wrap: anywhere;
+}
+.team-member .secondary {
+  flex-shrink: 0;
+}
+.team-invitation {
+  margin-top: 18px;
+}
+.team-pending {
+  margin: 12px 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  overflow-wrap: anywhere;
+}
+.team-message:empty {
+  display: none;
+}
+.team-message {
+  padding: 12px 0;
+  overflow-wrap: anywhere;
+}
+.connection.cloud-connection {
+  display: block;
+  max-width: 110px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+}
+@media (max-width: 360px) {
+  .connection.cloud-connection {
+    max-width: 75px;
+  }
+  .team-panel {
+    padding: 16px;
+  }
+  .team-member {
+    flex-wrap: wrap;
+  }
+}
+.list-row.team-authored {
+  border: 1.5px dashed var(--muted);
+}
+.team-authorship {
+  margin-top: 5px;
+}
+.team-scope {
+  flex: 0 0 auto;
+  margin-bottom: 10px;
+}
+.home-page .team-scope {
+  margin: 0;
+}

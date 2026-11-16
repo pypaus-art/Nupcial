@@ -1,12 +1,16 @@
 const BASE = self.registration.scope;
 const PREFIX = `nupcial-shell-${new URL(BASE).pathname}-`;
-const VERSION = "0.6.0";
+const VERSION = "0.7.0";
 const CACHE = `${PREFIX}${VERSION}`;
 const ASSETS = [
   "/",
   "/index.html",
   "/src/app.js",
   "/src/domain.js",
+  "/src/cloud-config.js",
+  "/src/cloud.js",
+  "/src/sync-model.js",
+  "/src/team-ui.js",
   "/src/storage.js",
   "/src/icons.js",
   "/src/map-model.js",

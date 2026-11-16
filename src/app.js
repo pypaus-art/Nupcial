@@ -34,6 +34,16 @@ import {
   progressFeedback,
 } from "./feedback.js";
 import { eraseFrames, printFrames } from "./ink.js";
+import { cloud, sync as syncCloud } from "./cloud.js";
+import { teamPage, teamSubmit, teamAction } from "./team-ui.js";
+import { equal } from "./sync-model.js";
+const storedEqual = (value, json) => {
+  try {
+    return equal(value, JSON.parse(json));
+  } catch {
+    return false;
+  }
+};
 const $ = (s) => document.querySelector(s);
 const esc = (s) =>
   String(s ?? "").replace(
@@ -123,6 +133,7 @@ async function change(
 ) {
   try {
     state = await commit(expected, (s) => mutate(s, action));
+    await cloud.refreshMetadata();
     channel?.postMessage("changed");
     if (close && dialog.open) await leave(dialog);
     render();
@@ -137,7 +148,14 @@ async function change(
           : $(`[${target}][data-id="${CSS.escape(action.value.id)}"]`);
       confirmVisual(element);
     }
-    if (close) toast("Cambios guardados en este dispositivo");
+    if (close)
+      toast(
+        cloud.connected
+          ? navigator.onLine
+            ? "Guardado · sincronizando con el equipo"
+            : "Guardado en el teléfono · pendiente de conexión"
+          : "Cambios guardados en este dispositivo",
+      );
     return true;
   } catch (e) {
     error(e.message);
@@ -168,17 +186,18 @@ function notes(text) {
   return `<div class="note">${icon("info")}<p>${text}</p></div>`;
 }
 function nav() {
-  const items = [
+  let items = [
     ["home", "Inicio", "home"],
     ["agenda", "Agenda", "calendar"],
     ["map", "Mapa del jardín", "map"],
     ["tasks", "Tareas", "tasks"],
     ["more", "Más", "more"],
   ];
+
   $("#nav").innerHTML = items
     .map(
       ([key, label, ico]) =>
-        `<a href="#${key}" ${key === "map" ? 'class="map-nav"' : 'class="nav-item"'} aria-label="${label}" ${route === key || (key === "more" && ["guests", "vendors", "people", "event", "plans", "backup", "garden"].includes(route)) ? 'aria-current="page"' : ""}>${icon(ico)}${key !== "map" ? `<span>${label}</span>` : ""}</a>`,
+        `<a href="#${key}" ${key === "map" ? 'class="map-nav"' : 'class="nav-item"'} aria-label="${label}" ${route === key || (key === "more" && ["guests", "vendors", "people", "event", "plans", "backup", "garden", "team"].includes(route)) ? 'aria-current="page"' : ""}>${icon(ico)}${key !== "map" ? `<span>${label}</span>` : ""}</a>`,
     )
     .join("");
 }
@@ -283,9 +302,14 @@ async function routeTo() {
     "plans",
     "backup",
     "garden",
+    "team",
   ].includes(next)
     ? next
     : "home";
+  if (cloud.limited && ["backup", "garden"].includes(route)) {
+    route = "home";
+    history.replaceState(null, "", "#home");
+  }
   editing = false;
   selectedTable = null;
   tablePreview = null;
@@ -299,6 +323,8 @@ async function routeTo() {
 }
 function render() {
   if (!state) return;
+  if (cloud.needsEvent) route = "team";
+  if (cloud.limited && ["backup", "garden"].includes(route)) route = "home";
   const previousProgress =
     main.dataset.route === route
       ? new Map(
@@ -321,7 +347,7 @@ function render() {
   main.className =
     route === "map"
       ? "map-page"
-      : route === "home"
+      : route === "home" && !cloud.mine
         ? "home-page"
         : route === "garden"
           ? "garden-editor-page"
@@ -330,7 +356,7 @@ function render() {
     "canvas-open",
     ["map", "garden"].includes(route),
   );
-  document.body.classList.toggle("home-open", route === "home");
+  document.body.classList.toggle("home-open", route === "home" && !cloud.mine);
   main.dataset.route = route;
   main.innerHTML = {
     home: homePage,
@@ -345,10 +371,12 @@ function render() {
     plans: plansPage,
     backup: backupPage,
     garden: gardenPage,
+    team: () => teamPage(state),
   }[route]();
   mountMapViewport();
   progressFeedback(previousProgress, main);
   tick();
+  connection();
 }
 function percentage(value, total) {
   return total > 0
@@ -363,7 +391,29 @@ function countSummary(key, title, actions, value, total, label) {
   const percent = percentage(value, total);
   return `<section class="section-summary" data-summary="${key}">${heading(title, "", actions)}<div class="summary-metric"><div class="summary-count"><strong>${value}</strong><span>/ ${total}</span></div><span class="summary-percent">${percent}%</span></div><div class="summary-bottom"><span>${label}</span>${progressBar(label, value, total)}</div></section>`;
 }
+function scopeControl() {
+  if (!cloud.limited) return "";
+  return `<div class="filters team-scope" aria-label="Vista del evento"><button class="filter" data-team-action="view-mine" aria-pressed="${cloud.mine}">Lo mío</button><button class="filter" data-team-action="view-all" aria-pressed="${!cloud.mine}">Todo el evento</button></div>`;
+}
+function authoredClass(collection, id) {
+  return cloud.attribution(collection, id)?.actorRole === "member"
+    ? "team-authored"
+    : "";
+}
+function authoredLabel(collection, id) {
+  const info = cloud.attribution(collection, id);
+  return info?.actorRole === "member"
+    ? `<p class="row-meta team-authorship">${info.action === "created" ? "Agregó" : "Editó"} ${esc(info.actorName)}</p>`
+    : "";
+}
+function memberActivities() {
+  const entries = state.agenda
+    .filter((a) => a.personId === cloud.member.personId)
+    .sort(byStart);
+  return `<div class="section-head"><h2>Mis actividades</h2></div><div class="list">${entries.map((a) => `<button class="list-row ${authoredClass("agenda", a.id)}" data-open="agenda" data-id="${esc(a.id)}"><strong>${esc(a.start)}</strong><div class="row-content"><div class="row-title">${esc(a.title)}</div>${authoredLabel("agenda", a.id)}</div>${icon("chevron", "chevron")}</button>`).join("") || `<p class="muted">No tienes actividades asignadas.</p>`}</div>`;
+}
 function homePage() {
+  if (cloud.mine) return scopeControl() + tasksPage() + memberActivities();
   const upcoming =
     [...state.agenda].sort(byStart).find((a) => a.status === "active") ||
     [...state.agenda].sort(byStart).find((a) => a.status !== "done");
@@ -373,14 +423,17 @@ function homePage() {
   const assigned = state.assignments.length;
   const settled = state.vendors.filter((v) => remaining(state, v) === 0).length;
   const pendingVendors = state.vendors.length - settled;
-  return `<h1 class="sr-only">Inicio</h1><section class="countdown home-countdown" aria-label="Cuenta regresiva al evento"><div id="countdown" class="countdown-values"></div></section>
+  return (
+    scopeControl() +
+    `<h1 class="sr-only">Inicio</h1><section class="countdown home-countdown" aria-label="Cuenta regresiva al evento"><div id="countdown" class="countdown-values"></div></section>
   <div class="bento home-bento">
     <button class="card home-next" data-go="agenda"><span class="tile-icon">${icon("calendar")}</span><div class="next-content"><span class="card-label">${upcoming?.status === "active" ? "En curso" : "Próxima actividad"}</span>${upcoming ? `<div class="home-time">${upcoming.start}</div><h2 class="next-title">${esc(upcoming.title)}</h2>${upcoming.personId ? `<p class="tile-detail">${esc(personName(upcoming.personId))}</p>` : ""}` : '<h2 class="next-title">Agenda completada</h2>'}</div></button>
     <button class="card home-tasks" data-go="tasks"><span class="tile-icon">${icon("tasks")}</span><div class="tile-main"><strong class="tile-number">${String(tasks.length).padStart(2, "0")}</strong><span class="tile-label">Pendientes</span></div><div class="tile-bottom">${progressBar("Tareas completadas", done, state.tasks.length)}<span class="tile-detail">${percentage(done, state.tasks.length)}%</span></div></button>
-    <button class="card home-vendors" data-go="vendors"><span class="tile-icon">${icon("truck")}</span><div class="tile-main"><strong class="tile-ratio">${String(settled).padStart(2, "0")}<span> / ${String(state.vendors.length).padStart(2, "0")}</span></strong><span class="tile-label">Proveedores</span><span class="tile-detail">${pendingVendors} por liquidar</span></div></button>
+    <button class="card home-vendors" data-go="vendors"><span class="tile-icon">${icon("truck")}</span><div class="tile-main">${cloud.limited ? `<strong class="tile-ratio">${state.vendors.length}</strong><span class="tile-label">Proveedores</span>` : `<strong class="tile-ratio">${String(settled).padStart(2, "0")}<span> / ${String(state.vendors.length).padStart(2, "0")}</span></strong><span class="tile-label">Proveedores</span><span class="tile-detail">${pendingVendors} por liquidar</span>`}</div></button>
     <button class="card home-guests" data-go="guests"><div class="tile-top"><span class="tile-icon">${icon("users")}</span><span class="pill">${percentage(assigned, state.guests.length)}%</span></div><div class="tile-main"><strong class="tile-ratio">${assigned}<span> / ${state.guests.length}</span></strong><span class="tile-label">Invitados</span><span class="tile-detail">${state.tables.length} ${state.tables.length === 1 ? "mesa" : "mesas"}</span></div></button>
   </div>
-  <button class="urgent-row" data-go="tasks"><span class="urgent-badge">${icon(urgent ? "urgent" : "check")}</span><strong>${urgent ? `${urgent} ${urgent === 1 ? "asunto urgente" : "asuntos urgentes"}` : "Sin pendientes urgentes"}</strong>${icon("chevron", "chevron")}</button>`;
+  <button class="urgent-row" data-go="tasks"><span class="urgent-badge">${icon(urgent ? "urgent" : "check")}</span><strong>${urgent ? `${urgent} ${urgent === 1 ? "asunto urgente" : "asuntos urgentes"}` : "Sin pendientes urgentes"}</strong>${icon("chevron", "chevron")}</button>`
+  );
 }
 function tick() {
   const counter = $("#countdown");
@@ -402,15 +455,26 @@ function tick() {
 function agendaPage() {
   const entries = [...state.agenda]
     .sort(byStart)
-    .filter((a) => filter === "all" || a.status === filter);
+    .filter(
+      (a) =>
+        (!cloud.mine || a.personId === cloud.member.personId) &&
+        (filter === "all" || a.status === filter),
+    );
   return (
+    scopeControl() +
     countSummary(
       "agenda",
       "Itinerario",
       button("agenda-export", "Exportar itinerario", "download") +
         button("new-agenda", "Agregar actividad"),
-      state.agenda.filter((a) => a.status === "done").length,
-      state.agenda.length,
+      state.agenda.filter(
+        (a) =>
+          (!cloud.mine || a.personId === cloud.member.personId) &&
+          a.status === "done",
+      ).length,
+      state.agenda.filter(
+        (a) => !cloud.mine || a.personId === cloud.member.personId,
+      ).length,
       "Completadas",
     ) +
     filters([
@@ -419,21 +483,23 @@ function agendaPage() {
       ["active", "En curso"],
       ["done", "Finalizado"],
     ]) +
-    `<div class="list">${entries.map((a) => `<button class="list-row agenda-row" data-open="agenda" data-id="${esc(a.id)}"><div class="agenda-time">${a.start}<small><span>${a.end || "por definir"}</span>${a.status === "done" ? `<span class="agenda-finished" aria-label="Finalizado">${icon("circle-check")}</span>` : ""}</small></div><div class="row-content"><div class="row-title">${esc(a.title)}</div>${a.personId || a.location ? `<div class="row-meta">${esc([a.personId ? personName(a.personId) : null, a.location].filter(Boolean).join(" · "))}</div>` : ""}${a.endNote ? `<p class="row-meta">${esc(a.endNote)}</p>` : ""}${a.status === "active" ? `<span class="pill">${labels[a.status]}</span>` : ""}</div>${icon("chevron", "chevron")}</button>`).join("") || empty("Sin actividades", "No hay actividades con este estado.", "new-agenda", "Agregar actividad", "calendar")}</div>`
+    `<div class="list">${entries.map((a) => `<button class="list-row agenda-row ${authoredClass("agenda", a.id)}" data-open="agenda" data-id="${esc(a.id)}"><div class="agenda-time">${a.start}<small><span>${a.end || "por definir"}</span>${a.status === "done" ? `<span class="agenda-finished" aria-label="Finalizado">${icon("circle-check")}</span>` : ""}</small></div><div class="row-content"><div class="row-title">${esc(a.title)}</div>${a.personId || a.location ? `<div class="row-meta">${esc([a.personId ? personName(a.personId) : null, a.location].filter(Boolean).join(" · "))}</div>` : ""}${a.endNote ? `<p class="row-meta">${esc(a.endNote)}</p>` : ""}${authoredLabel("agenda", a.id)}${a.status === "active" ? `<span class="pill">${labels[a.status]}</span>` : ""}</div>${icon("chevron", "chevron")}</button>`).join("") || empty("Sin actividades", "No hay actividades con este estado.", "new-agenda", "Agregar actividad", "calendar")}</div>`
   );
 }
 function tasksPage() {
-  const tasks = state.tasks.filter(
-    (t) => filter === "all" || t.status === filter,
+  const visible = state.tasks.filter(
+    (t) => !cloud.mine || t.personId === cloud.member.personId,
   );
-  const done = state.tasks.filter((t) => t.status === "done").length;
+  const tasks = visible.filter((t) => filter === "all" || t.status === filter);
+  const done = visible.filter((t) => t.status === "done").length;
   return (
+    (route === "home" ? "" : scopeControl()) +
     countSummary(
       "tasks",
-      "Tareas",
+      cloud.mine ? "Mis tareas" : "Tareas",
       button("new-tasks", "Agregar tarea"),
       done,
-      state.tasks.length,
+      visible.length,
       "Terminadas",
     ) +
     filters([
@@ -442,7 +508,7 @@ function tasksPage() {
       ["doing", "En curso"],
       ["done", "Terminadas"],
     ]) +
-    `<div class="list">${tasks.map((t) => `<button class="list-row" data-open="tasks" data-id="${esc(t.id)}"><span class="task-status" aria-label="${t.status === "done" ? "Terminada" : labels[t.status]}"><span class="status-icon ${t.priority}" aria-label="${t.status === "done" ? "Terminada" : `Prioridad ${t.priority === "urgent" ? "urgente" : "normal"}`}">${icon(t.status === "done" ? "circle-check" : t.priority === "urgent" ? "urgent" : "circle")}</span><span class="task-steps" aria-hidden="true">${[1, 2, 3].map((step) => `<i class="${step <= (t.status === "done" ? 3 : t.status === "doing" ? 2 : 1) ? "filled" : ""}"></i>`).join("")}</span></span><div class="row-content"><div class="row-title">${esc(t.title)}</div><div class="row-meta">${!t.personId ? `<span class="unassigned-marker">${icon("unassigned")}Sin responsable</span>` : esc(personName(t.personId))}${t.due ? " · " + esc(t.due) : ""}</div></div>${icon("chevron", "chevron")}</button>`).join("") || empty("Una cosa a la vez", "Anota lo que falta y asígnalo a la persona indicada.", "new-tasks", "Agregar tarea", "tasks")}</div>`
+    `<div class="list">${tasks.map((t) => `<button class="list-row ${authoredClass("tasks", t.id)}" data-open="tasks" data-id="${esc(t.id)}"><span class="task-status" aria-label="${t.status === "done" ? "Terminada" : labels[t.status]}"><span class="status-icon ${t.priority}" aria-label="${t.status === "done" ? "Terminada" : `Prioridad ${t.priority === "urgent" ? "urgente" : "normal"}`}">${icon(t.status === "done" ? "circle-check" : t.priority === "urgent" ? "urgent" : "circle")}</span><span class="task-steps" aria-hidden="true">${[1, 2, 3].map((step) => `<i class="${step <= (t.status === "done" ? 3 : t.status === "doing" ? 2 : 1) ? "filled" : ""}"></i>`).join("")}</span></span><div class="row-content"><div class="row-title">${esc(t.title)}</div><div class="row-meta">${!t.personId ? `<span class="unassigned-marker">${icon("unassigned")}Sin responsable</span>` : esc(personName(t.personId))}${t.due ? " · " + esc(t.due) : ""}</div>${authoredLabel("tasks", t.id)}</div>${icon("chevron", "chevron")}</button>`).join("") || empty("Una cosa a la vez", "Anota lo que falta y asígnalo a la persona indicada.", "new-tasks", "Agregar tarea", "tasks")}</div>`
   );
 }
 function guestsPage() {
@@ -450,7 +516,7 @@ function guestsPage() {
     countSummary(
       "guests",
       "Invitados",
-      button("add-guests", "Agregar invitados"),
+      cloud.limited ? "" : button("add-guests", "Agregar invitados"),
       state.assignments.length,
       state.guests.length,
       "Con mesa",
@@ -482,13 +548,15 @@ function guestList() {
       query
         ? "Prueba con otro nombre."
         : "Agrega uno o varios invitados a la vez.",
-      query ? null : "add-guests",
+      query || cloud.limited ? null : "add-guests",
       "Agregar invitados",
       "users",
     )
   }</div>${rows.length > 250 ? notes("Se muestran 250 resultados. Usa la búsqueda para acotar la lista.") : ""}`;
 }
 function vendorsPage() {
+  if (cloud.limited)
+    return `<section class="section-summary" data-summary="vendors">${heading("Proveedores")}<strong class="balance-value">${state.vendors.length}</strong><p class="muted">Registrados</p></section><div class="list">${state.vendors.map((v) => `<button class="list-row" data-open="vendors" data-id="${esc(v.id)}">${icon("truck")}<div class="row-content"><div class="row-title">${esc(v.name)}</div><p class="row-meta">${esc(v.service)}${v.arrival ? " · " + esc(v.arrival) : ""}</p></div>${icon("chevron", "chevron")}</button>`).join("") || `<p class="muted">Aún no hay proveedores registrados.</p>`}</div>`;
   const vendors = state.vendors.filter(
     (v) =>
       filter === "all" ||
@@ -515,7 +583,7 @@ function vendorsPage() {
     `<div class="list">${vendors.map((v) => `<button class="list-row" data-open="vendors" data-id="${esc(v.id)}">${icon("wallet")}<div class="row-content"><div class="row-title">${esc(v.name)}</div><div class="row-meta">${esc(v.service)}${v.refundable ? " · Reembolsable" : ""}</div></div><div class="row-end"><strong>${money(remaining(state, v))}</strong><span>${remaining(state, v) > 0 ? "pendiente" : "pagado"}</span></div></button>`).join("") || empty("Cuentas claras", "Registra el total acordado; después podrás agregar cada abono.", "new-vendors", "Agregar proveedor", "wallet")}</div>${state.vendors.some((v) => v.refundable) ? '<p class="finance-note">Depósitos reembolsables separados del gasto.</p>' : ""}`
   );
 }
-const APP_VERSION = "0.6.0";
+const APP_VERSION = "0.7.0";
 let appWorkerRegistration,
   updateBusy = false,
   updateLabel = "Actualizar Nupcial",
@@ -680,7 +748,13 @@ async function updateApplication() {
   }
 }
 function morePage() {
-  const links = [
+  let links = [
+    [
+      "team",
+      "users",
+      "Equipo",
+      cloud.connected ? cloud.state.status : "Compartir y asignar",
+    ],
     ["event", "calendar", "Datos del evento", "Fecha, lugar y horario"],
     ["garden", "leaf", "Diseñar jardín", "Tu fondo para el mapa"],
     ["guests", "users", "Invitados", "Asistencia y mesas"],
@@ -699,12 +773,23 @@ function morePage() {
       "Guardar, revisar y restaurar",
     ],
   ];
+  if (cloud.limited)
+    links = links
+      .filter(([key]) => !["garden", "backup"].includes(key))
+      .map((row) =>
+        row[0] === "vendors"
+          ? ["vendors", "truck", "Proveedores", "Servicios y contactos"]
+          : row,
+      );
   return (
+    scopeControl() +
     heading("Más") +
     `<div class="more-bento">${links.map(([key, ico, title, sub]) => `<button class="menu-tile" data-go="${key}">${icon(ico)}<span>${title}</span><small>${sub}</small></button>`).join("")}<button class="menu-tile" data-action="toggle-sounds" aria-pressed="${soundEnabled()}">${icon(soundEnabled() ? "sound" : "muted")}<span>Sonidos suaves</span><small>${soundEnabled() ? "Activados" : "Silenciados"}</small><span class="switch-track" aria-hidden="true"><i></i></span></button></div>` +
     updateControl() +
     notes(
-      "Esta versión guarda los datos únicamente en este navegador. Compartir su dirección no comparte tus registros.",
+      cloud.connected
+        ? "Evento privado compartido con tu equipo. Los cambios se sincronizan al tener conexión."
+        : "Tus datos siguen en este teléfono. En Equipo puedes conectar el evento para compartirlos.",
     )
   );
 }
@@ -713,7 +798,7 @@ function peoplePage() {
     heading(
       "Responsables",
       "El mismo directorio en agenda, tareas y Plan B",
-      button("new-people", "Agregar responsable"),
+      cloud.limited ? "" : button("new-people", "Agregar responsable"),
     ) +
     `<div class="list">${state.people.map((p) => `<button class="list-row" data-open="people" data-id="${esc(p.id)}"><span class="avatar">${esc(initials(p.name))}</span><div class="row-content"><div class="row-title">${esc(p.name)}</div><div class="row-meta">${esc([p.role, p.phone].filter(Boolean).join(" · "))}</div></div>${icon("chevron", "chevron")}</button>`).join("") || empty("¿Con quién contamos?", "Registra a quienes ayudarán a coordinar el evento.", "new-people", "Agregar responsable", "person")}</div>`
   );
@@ -723,7 +808,7 @@ function plansPage() {
     heading(
       "Plan B",
       "Borrador · pendiente de aprobación final",
-      button("new-contingencies", "Agregar situación"),
+      cloud.limited ? "" : button("new-contingencies", "Agregar situación"),
     ) +
     `<div class="list">${state.contingencies.map((p) => `<button class="list-row" data-open="contingencies" data-id="${esc(p.id)}">${icon("shield")}<div class="row-content"><div class="row-title">${esc(p.name)}</div><div class="row-meta">${esc(personName(p.personId))}</div></div><span class="pill">${labels[p.status]}</span></button>`).join("")}</div>` +
     notes(
@@ -736,7 +821,9 @@ function eventPage() {
     heading(
       "El evento",
       "La información que compartimos",
-      button("edit-event", "Editar datos del evento", "edit"),
+      cloud.limited
+        ? ""
+        : button("edit-event", "Editar datos del evento", "edit"),
     ) +
     `<div class="card"><h2>${esc(state.event.name)}</h2><div class="mini-rule"></div><p>${esc(state.event.venue)}</p><p class="muted small">${esc(state.event.region)}</p><div class="mini-rule"></div><p>${esc(state.event.date)} · ${esc(state.event.time)}</p><p class="muted small">America/Mexico_City</p></div>` +
     notes(
@@ -745,7 +832,7 @@ function eventPage() {
   );
 }
 function mapPage() {
-  return `<div class="canvas-head" id="table-edit-panel">${editing ? tableControls() : heading("Mapa del jardín", "", button("add-table", "Agregar mesa") + button("toggle-edit", "Editar mesas", "edit"))}</div><div class="garden ${editing ? "editing" : ""}" role="region" aria-label="Distribución orientativa del jardín">${board(state, { editing, selected: selectedTable, tablePreview })}${!state.tables.length ? `<div class="garden-empty">${icon("table")}<p>Organiza las mesas.</p><button class="primary" data-action="setup-tables">Crear las 14 mesas</button></div>` : ""}</div>`;
+  return `<div class="canvas-head" id="table-edit-panel">${editing ? tableControls() : heading("Mapa del jardín", "", cloud.limited ? "" : button("add-table", "Agregar mesa") + button("toggle-edit", "Editar mesas", "edit"))}</div><div class="garden ${editing ? "editing" : ""}" role="region" aria-label="Distribución orientativa del jardín">${board(state, { editing, selected: selectedTable, tablePreview })}${!state.tables.length && !cloud.limited ? `<div class="garden-empty">${icon("table")}<p>Organiza las mesas.</p><button class="primary" data-action="setup-tables">Crear las 14 mesas</button></div>` : ""}</div>`;
 }
 let selectedTable = null,
   tablePreview = null,
@@ -764,7 +851,7 @@ function selectedObject() {
 }
 function updateDirty() {
   gardenDirty =
-    !!gardenDraft && JSON.stringify(gardenDraft.elements) !== gardenBaseline;
+    !!gardenDraft && !storedEqual(gardenDraft.elements, gardenBaseline);
   const status = $("#garden-status");
   if (status)
     status.textContent = gardenStale
@@ -947,7 +1034,7 @@ function saveGarden() {
     if (!gardenDirty) return true;
     const value = structuredClone(gardenDraft);
     try {
-      if (JSON.stringify(state.garden) !== gardenSaved)
+      if (!storedEqual(state.garden, gardenSaved))
         throw new Error(
           "El jardín cambió en otra pestaña. Tu diseño sigue aquí.",
         );
@@ -960,7 +1047,7 @@ function saveGarden() {
         if (!e.message.includes("otra pestaña")) throw e;
         const latest = await load();
         state = latest;
-        if (JSON.stringify(latest.garden) !== gardenSaved)
+        if (!storedEqual(latest.garden, gardenSaved))
           throw new Error(
             "El jardín cambió en otra pestaña. Tu diseño sigue aquí.",
           );
@@ -987,7 +1074,7 @@ async function gardenAction(action, el) {
   if (action === "garden-retry") {
     const latest = await load();
     if (
-      JSON.stringify(latest.garden) !== gardenSaved &&
+      !storedEqual(latest.garden, gardenSaved) &&
       !confirm(
         "¿Guardar tu diseño sobre el jardín de la otra pestaña? Los demás registros se conservarán.",
       )
@@ -1131,6 +1218,30 @@ function addGuests() {
 }
 function openEntity(collection, entityId) {
   const existing = state[collection]?.find((x) => x.id === entityId);
+  if (cloud.limited && !["tasks", "agenda"].includes(collection)) {
+    if (!existing) return;
+    if (collection === "vendors") {
+      vendorDetail(existing);
+      return;
+    }
+    const details =
+      collection === "guests"
+        ? [
+            labels[existing.type],
+            tableFor(existing.id)?.name || "Sin mesa",
+            existing.notes,
+          ]
+        : collection === "people"
+          ? [existing.role, existing.phone]
+          : [existing.situation, existing.trigger, existing.response];
+    modal(
+      `<h2>${esc(existing.name)}</h2>${details
+        .filter(Boolean)
+        .map((text) => `<p>${esc(text)}</p>`)
+        .join("")}`,
+    );
+    return;
+  }
   const v = existing || {};
   if (collection === "tables") {
     openTable(entityId);
@@ -1178,7 +1289,9 @@ function openEntity(collection, entityId) {
         true,
         'required maxlength="160"',
       ) +
-      personSelect(v.personId) +
+      personSelect(
+        existing ? v.personId : cloud.limited ? cloud.member.personId : null,
+      ) +
       choices(
         "Prioridad",
         "priority",
@@ -1214,7 +1327,9 @@ function openEntity(collection, entityId) {
         true,
         'maxlength="160"',
       ) +
-      personSelect(v.personId) +
+      personSelect(
+        existing ? v.personId : cloud.limited ? cloud.member.personId : null,
+      ) +
       field("Lugar", "location", v.location, "text", true, 'maxlength="160"') +
       choices(
         "Estado",
@@ -1251,7 +1366,7 @@ function openEntity(collection, entityId) {
       personSelect(v.personId);
   }
   modal(
-    `${title ? `<h2>${esc(title)}</h2>` : ""}<form id="entity-form" data-collection="${collection}" data-id="${esc(existing?.id || "")}"><div class="form-grid">${body}</div>${actions(collection, existing?.id)}</form>`,
+    `${title ? `<h2>${esc(title)}</h2>` : ""}<form id="entity-form" data-collection="${collection}" data-id="${esc(existing?.id || "")}"><div class="form-grid">${body}</div>${cloud.limited ? `<div class="form-actions"><button type="submit" class="primary">Guardar cambios</button></div>` : actions(collection, existing?.id)}</form>`,
   );
 }
 function vendorEdit(v) {
@@ -1260,6 +1375,20 @@ function vendorEdit(v) {
   );
 }
 function vendorDetail(v) {
+  if (cloud.limited) {
+    modal(
+      `<h2>${esc(v.name)}</h2>${[
+        v.service,
+        v.contact,
+        v.phone,
+        v.arrival ? "Llega " + v.arrival : "",
+      ]
+        .filter(Boolean)
+        .map((text) => `<p>${esc(text)}</p>`)
+        .join("")}`,
+    );
+    return;
+  }
   const payments = state.payments.filter((p) => p.vendorId === v.id);
   modal(
     `<h2>${esc(v.name)}</h2><p class="muted">${esc(v.service)}${v.refundable ? " · Depósito reembolsable" : ""}</p><div class="summary-strip" style="margin-top:20px"><div><span>Acordado</span><strong>${money(v.total)}</strong></div><div><span>Abonado</span><strong>${money(paid(state, v.id))}</strong></div><div><span>Saldo</span><strong>${money(remaining(state, v))}</strong></div></div>${v.contact || v.phone ? `<p class="row-meta">${esc(v.contact)} ${v.phone ? `<a href="tel:${esc(v.phone.replace(/[^+\d]/g, ""))}">${esc(v.phone)}</a>` : ""}</p>` : ""}${v.arrival ? `<p class="row-meta">Llegada: ${v.arrival}</p>` : ""}${v.notes ? `<p class="notice-box">${esc(v.notes)}</p>` : ""}<div class="inline-actions"><button class="secondary" data-action="edit-vendor" data-id="${esc(v.id)}">Editar proveedor</button><button class="secondary" data-action="add-payment" data-id="${esc(v.id)}">${icon("plus")} Registrar abono</button></div><div class="section-head"><h3>Abonos registrados</h3></div>${payments.map((p) => `<div class="payment-row"><div class="row-content"><p>${esc(p.concept)}</p><p class="row-meta">${esc(p.date)}</p></div><strong>${money(p.amount)}</strong><button class="icon-button" data-delete="payments" data-id="${esc(p.id)}" aria-label="Eliminar abono ${esc(p.concept)}">${icon("trash")}</button></div>`).join("") || '<p class="muted small">Aún no hay abonos registrados.</p>'}`,
@@ -1271,6 +1400,17 @@ function paymentForm(vendorId) {
   );
 }
 function openTable(tableId) {
+  if (cloud.limited) {
+    const t = state.tables.find((row) => row.id === tableId);
+    if (!t) return;
+    const names = state.assignments
+      .filter((a) => a.tableId === tableId)
+      .map((a) => state.guests.find((g) => g.id === a.guestId)?.name);
+    modal(
+      `<h2>${esc(t.name)}</h2><p>${names.length} / ${t.capacity} lugares</p>${names.map((name) => `<p>${esc(name)}</p>`).join("")}`,
+    );
+    return;
+  }
   const t = state.tables.find((t) => t.id === tableId);
   if (!t) return;
   const assigned = state.assignments.filter((a) => a.tableId === tableId);
@@ -1474,12 +1614,7 @@ async function refreshFormContext(form, force = false) {
     !!original &&
     (form.id === "entity-form" ? !current.record : !current);
   state = latest;
-  if (
-    deleted ||
-    (!force &&
-      formChanged(form) &&
-      JSON.stringify(original) !== JSON.stringify(current))
-  ) {
+  if (deleted || (!force && formChanged(form) && !equal(original, current))) {
     showFormConflict(form, deleted);
     return false;
   }
@@ -1730,9 +1865,18 @@ async function requestDialogClose() {
 document.addEventListener("submit", (e) => {
   if (!e.target.matches("form")) return;
   e.preventDefault();
+  if (e.target.dataset.teamForm) {
+    runTeam(() => teamSubmit(e.target, e.submitter, state), e.target);
+    return;
+  }
   saveForm(e.target);
 });
 document.addEventListener("click", async (e) => {
+  const teamButton = e.target.closest("[data-team-action]");
+  if (teamButton) {
+    await runTeam(() => teamAction(teamButton, state), teamButton);
+    return;
+  }
   if (
     e.target.closest("#map-canvas") &&
     performance.now() < suppressMapClickUntil
@@ -1774,6 +1918,7 @@ document.addEventListener("click", async (e) => {
   }
   const del = e.target.closest("[data-delete]");
   if (del) {
+    if (cloud.limited) return;
     confirmDelete(del.dataset.delete, del.dataset.id);
     return;
   }
@@ -1808,6 +1953,17 @@ document.addEventListener("click", async (e) => {
   if (!b) return;
   const action = b.dataset.action,
     entityId = b.dataset.id;
+  if (
+    cloud.limited &&
+    ![
+      "new-tasks",
+      "new-agenda",
+      "agenda-export",
+      "toggle-sounds",
+      "update-app",
+    ].includes(action)
+  )
+    return;
   if (action === "update-app") {
     await updateApplication();
     return;
@@ -2138,25 +2294,40 @@ matchMedia("(prefers-color-scheme:dark)").addEventListener("change", () => {
   if (theme === "system") applyTheme();
 });
 function connection() {
-  $("#connection").textContent = navigator.onLine
-    ? "En este dispositivo"
-    : "Sin conexión";
+  $("#connection").textContent = cloud.connected
+    ? cloud.state.status
+    : navigator.onLine
+      ? "En este dispositivo"
+      : "Sin conexión";
+  $("#connection").classList.toggle("sr-only", !cloud.connected);
+  $("#connection").classList.toggle("cloud-connection", cloud.connected);
+  document
+    .querySelectorAll("[data-sync-status]")
+    .forEach((el) => (el.textContent = cloud.state.status));
+  if (cloud.connected)
+    $(".desktop-foot").textContent = "Nupcial · Evento compartido";
+  else $(".desktop-foot").textContent = "Nupcial · Datos en este dispositivo";
 }
 window.addEventListener("online", connection);
 window.addEventListener("offline", connection);
 connection();
 window.addEventListener("hashchange", routeTo);
 async function syncExternal() {
+  if (!state) return;
   if (drag) {
     externalUpdatePending = true;
     return;
   }
   const latest = await load();
-  if (latest.revision <= state.revision) return;
+  if (latest.revision <= state.revision) {
+    // Sync metadata (including a conflict) can change without replacing the local draft.
+    if (route === "team" && !teamHasDraft()) render();
+    return;
+  }
   state = latest;
   if (route === "garden" && gardenDraft) {
     if (gardenDirty) {
-      if (JSON.stringify(latest.garden) !== gardenSaved)
+      if (!storedEqual(latest.garden, gardenSaved))
         showGardenSaveError(
           "El jardín cambió en otra pestaña. Tu diseño sigue aquí.",
         );
@@ -2169,11 +2340,66 @@ async function syncExternal() {
     }
     return;
   }
+  if (route === "team" && teamHasDraft()) return;
+  const focused = document.activeElement?.closest("#main")
+    ? document.activeElement
+    : null;
+  const focusId = focused?.id,
+    caret = focused?.selectionStart,
+    caretEnd = focused?.selectionEnd;
   render();
+  if (focusId) {
+    const replacement = document.getElementById(focusId);
+    replacement?.focus({ preventScroll: true });
+    if (typeof caret === "number" && replacement?.setSelectionRange)
+      replacement.setSelectionRange(caret, caretEnd);
+  }
   if (dialog.open)
     toast("Hubo cambios en otra pestaña. Reabre la ficha antes de guardar.");
 }
+function teamHasDraft() {
+  if (document.activeElement?.closest("#main form")) return true;
+  return [
+    ...main.querySelectorAll("form input, form textarea, form select"),
+  ].some((el) => {
+    if (el.type === "radio" || el.type === "checkbox")
+      return el.checked !== el.defaultChecked;
+    if (el.tagName === "SELECT")
+      return (
+        el.value !==
+        ([...el.options].find((option) => option.defaultSelected)?.value ||
+          el.options[0]?.value)
+      );
+    return el.value !== el.defaultValue;
+  });
+}
 channel?.addEventListener("message", syncExternal);
+window.addEventListener("nupcial:remote-change", syncExternal);
+window.addEventListener("nupcial:sync-status", connection);
+async function runTeam(work, control) {
+  if (control.getAttribute("aria-busy") === "true") return;
+  control.setAttribute("aria-busy", "true");
+  control.inert = true;
+  const shell = $(".shell");
+  shell.inert = true;
+  try {
+    const message = await work();
+    state = await load();
+    if (cloud.limited && ["backup", "garden"].includes(route)) route = "home";
+    render();
+    if (message) toast(message);
+  } catch (e) {
+    const el = $("#team-message");
+    if (el) {
+      el.textContent = e.message;
+      el.scrollIntoView({ block: "nearest" });
+    } else error(e.message);
+  } finally {
+    shell.inert = false;
+    control.inert = false;
+    control.removeAttribute("aria-busy");
+  }
+}
 document.addEventListener("visibilitychange", () => {
   if (document.hidden && gardenDirty) saveGarden();
 });
@@ -2184,6 +2410,7 @@ window.addEventListener("beforeinstallprompt", (e) => {
 async function boot() {
   try {
     await openDatabase();
+    await cloud.restore();
     state = await load();
     routeTo();
     if ("serviceWorker" in navigator) {
