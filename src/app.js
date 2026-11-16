@@ -515,6 +515,170 @@ function vendorsPage() {
     `<div class="list">${vendors.map((v) => `<button class="list-row" data-open="vendors" data-id="${esc(v.id)}">${icon("wallet")}<div class="row-content"><div class="row-title">${esc(v.name)}</div><div class="row-meta">${esc(v.service)}${v.refundable ? " · Reembolsable" : ""}</div></div><div class="row-end"><strong>${money(remaining(state, v))}</strong><span>${remaining(state, v) > 0 ? "pendiente" : "pagado"}</span></div></button>`).join("") || empty("Cuentas claras", "Registra el total acordado; después podrás agregar cada abono.", "new-vendors", "Agregar proveedor", "wallet")}</div>${state.vendors.some((v) => v.refundable) ? '<p class="finance-note">Depósitos reembolsables separados del gasto.</p>' : ""}`
   );
 }
+const APP_VERSION = "0.6.0";
+let appWorkerRegistration,
+  updateBusy = false,
+  updateLabel = "Actualizar Nupcial",
+  reloadForUpdate = false;
+function updateControl() {
+  return `<button class="menu-row" data-action="update-app" aria-busy="${updateBusy}" ${updateBusy ? "disabled" : ""}>${icon("refresh")}<div class="row-content"><span data-update-label>${updateLabel}</span><small>Versión ${APP_VERSION}</small></div>${icon("chevron", "chevron")}</button>`;
+}
+function updateProgress(label) {
+  updateLabel = label;
+  const control = $('[data-action="update-app"]');
+  if (control) {
+    control.disabled = updateBusy;
+    control.setAttribute("aria-busy", String(updateBusy));
+    control.querySelector("[data-update-label]").textContent = label;
+  }
+}
+function deadline(promise, milliseconds, message) {
+  let timer;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(message)), milliseconds);
+    }),
+  ]).finally(() => clearTimeout(timer));
+}
+function downloadedWorker(registration) {
+  if (registration.waiting) return Promise.resolve(registration.waiting);
+  const worker = registration.installing;
+  if (!worker) return Promise.resolve(null);
+  let changed;
+  return deadline(
+    new Promise((resolve, reject) => {
+      changed = () => {
+        if (worker.state === "installed") {
+          worker.removeEventListener("statechange", changed);
+          resolve(registration.waiting || worker);
+        }
+        if (worker.state === "redundant") {
+          worker.removeEventListener("statechange", changed);
+          reject(
+            new Error(
+              "No se completó la descarga. Tu versión actual sigue disponible.",
+            ),
+          );
+        }
+      };
+      worker.addEventListener("statechange", changed);
+      changed();
+    }),
+    25000,
+    "La descarga tardó demasiado. Vuelve a intentarlo con conexión.",
+  ).finally(() => worker.removeEventListener("statechange", changed));
+}
+function activateDownloadedWorker(worker) {
+  const channel = new MessageChannel();
+  let changed;
+  const controlled = new Promise((resolve) => {
+    changed = () => {
+      if (navigator.serviceWorker.controller === worker) resolve();
+    };
+    navigator.serviceWorker.addEventListener("controllerchange", changed);
+    changed();
+  });
+  const accepted = new Promise((resolve, reject) => {
+    channel.port1.onmessage = (event) => {
+      if (event.data?.ok) resolve();
+      else
+        reject(
+          new Error(
+            event.data?.reason === "other-tabs"
+              ? "Cierra las otras ventanas de Nupcial y vuelve a actualizar desde aquí."
+              : "No se pudo activar la actualización. Tu versión actual sigue disponible.",
+          ),
+        );
+    };
+    worker.postMessage({ type: "NUPCIAL_APPLY_UPDATE" }, [channel.port2]);
+  });
+  return deadline(
+    Promise.all([accepted, controlled]),
+    15000,
+    "No pudimos activar la actualización. Inténtalo nuevamente.",
+  ).finally(() => {
+    navigator.serviceWorker.removeEventListener("controllerchange", changed);
+    channel.port1.close();
+    channel.port2.close();
+  });
+}
+async function prepareUpdate() {
+  if (drag) return false;
+  await tableWork;
+  await tableDialogWork;
+  if (dialog.open && !(await requestDialogClose())) return false;
+  if (gardenDirty && !(await saveGarden())) return false;
+  await gardenSaveWork;
+  return !gardenDirty && !dialog.open && !drag;
+}
+async function updateApplication() {
+  if (updateBusy) return;
+  updateBusy = true;
+  updateProgress("Buscando actualización…");
+  const shell = $(".shell");
+  try {
+    if (!navigator.serviceWorker)
+      throw new Error(
+        "Este navegador no permite actualizar desde aquí. Abre Nupcial en Chrome o Safari.",
+      );
+    const registration =
+      appWorkerRegistration ||
+      (await navigator.serviceWorker.getRegistration());
+    if (!registration)
+      throw new Error(
+        "Abre Nupcial con conexión y vuelve a intentar la actualización.",
+      );
+    if (!registration.waiting && !registration.installing) {
+      if (!navigator.onLine)
+        throw new Error("Conéctate a internet para buscar actualizaciones.");
+      await deadline(
+        registration.update().catch(() => {
+          throw new Error(
+            "No pudimos comprobar la actualización. Revisa tu conexión e inténtalo de nuevo.",
+          );
+        }),
+        15000,
+        "No pudimos comprobar la actualización. Revisa tu conexión e inténtalo de nuevo.",
+      );
+    }
+    if (registration.installing) updateProgress("Descargando actualización…");
+    const worker = await downloadedWorker(registration);
+    if (!worker) {
+      toast("Ya tienes la versión más reciente de Nupcial.");
+      return;
+    }
+    // A user may have continued working while the new version downloaded.
+    if (route !== "more" || dialog.open || gardenDirty || drag) {
+      toast(
+        "La actualización está lista. Instálala desde Más cuando termines de editar.",
+      );
+      return;
+    }
+    shell.inert = true;
+    updateProgress("Guardando cambios…");
+    if (!(await prepareUpdate()))
+      throw new Error(
+        "Revisa los cambios pendientes antes de actualizar. Lo escrito se conserva.",
+      );
+    updateProgress("Actualizando…");
+    await activateDownloadedWorker(worker);
+    reloadForUpdate = true;
+    location.reload();
+  } catch (e) {
+    reloadForUpdate = false;
+    toast(
+      e.message ||
+        "No pudimos actualizar. Tu versión actual y tus datos se conservan.",
+    );
+  } finally {
+    if (!reloadForUpdate) {
+      shell.inert = false;
+      updateBusy = false;
+      updateProgress("Actualizar Nupcial");
+    }
+  }
+}
 function morePage() {
   const links = [
     ["event", "calendar", "Datos del evento", "Fecha, lugar y horario"],
@@ -538,6 +702,7 @@ function morePage() {
   return (
     heading("Más") +
     `<div class="more-bento">${links.map(([key, ico, title, sub]) => `<button class="menu-tile" data-go="${key}">${icon(ico)}<span>${title}</span><small>${sub}</small></button>`).join("")}<button class="menu-tile" data-action="toggle-sounds" aria-pressed="${soundEnabled()}">${icon(soundEnabled() ? "sound" : "muted")}<span>Sonidos suaves</span><small>${soundEnabled() ? "Activados" : "Silenciados"}</small><span class="switch-track" aria-hidden="true"><i></i></span></button></div>` +
+    updateControl() +
     notes(
       "Esta versión guarda los datos únicamente en este navegador. Compartir su dirección no comparte tus registros.",
     )
@@ -1643,6 +1808,10 @@ document.addEventListener("click", async (e) => {
   if (!b) return;
   const action = b.dataset.action,
     entityId = b.dataset.id;
+  if (action === "update-app") {
+    await updateApplication();
+    return;
+  }
   if (action.startsWith("garden-")) {
     await gardenAction(action, b);
     return;
@@ -2021,7 +2190,9 @@ async function boot() {
       try {
         const reg = await navigator.serviceWorker.register(
           new URL("../sw.js", import.meta.url),
+          { updateViaCache: "none" },
         );
+        appWorkerRegistration = reg;
         reg.addEventListener("updatefound", () => {
           const worker = reg.installing;
           worker?.addEventListener("statechange", () => {
@@ -2029,9 +2200,7 @@ async function boot() {
               worker.state === "installed" &&
               navigator.serviceWorker.controller
             )
-              toast(
-                "Hay una actualización. Cierra y vuelve a abrir Nupcial cuando termines.",
-              );
+              toast("Hay una actualización. Puedes instalarla desde Más.");
           });
         });
       } catch {

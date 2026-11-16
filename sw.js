@@ -1,6 +1,7 @@
 const BASE = self.registration.scope;
 const PREFIX = `nupcial-shell-${new URL(BASE).pathname}-`;
-const CACHE = `${PREFIX}v2026-11-12-9`;
+const VERSION = "0.6.0";
+const CACHE = `${PREFIX}${VERSION}`;
 const ASSETS = [
   "/",
   "/index.html",
@@ -51,15 +52,49 @@ self.addEventListener("fetch", (event) => {
     return;
   event.respondWith(
     caches
-      .match(event.request)
+      .open(CACHE)
+      .then((cache) => cache.match(event.request))
       .then(
         (cached) =>
           cached ||
           fetch(event.request).catch(() =>
             event.request.mode === "navigate"
-              ? caches.match(new URL("index.html", BASE).href)
+              ? caches
+                  .open(CACHE)
+                  .then((cache) =>
+                    cache.match(new URL("index.html", BASE).href),
+                  )
               : Response.error(),
           ),
       ),
+  );
+});
+
+// Activate only after the visible app has saved its work, without disturbing other windows.
+self.addEventListener("message", (event) => {
+  if (event.data?.type !== "NUPCIAL_APPLY_UPDATE") return;
+  const reply = event.ports[0];
+  event.waitUntil(
+    (async () => {
+      if (!reply || !event.source?.id || !event.source.url.startsWith(BASE))
+        return;
+      const windows = await self.clients.matchAll({
+        type: "window",
+        includeUncontrolled: true,
+      });
+      if (
+        windows.some(
+          (client) =>
+            client.url.startsWith(BASE) && client.id !== event.source.id,
+        )
+      ) {
+        reply.postMessage({ ok: false, reason: "other-tabs" });
+        return;
+      }
+      reply.postMessage({ ok: true });
+      await self.skipWaiting();
+    })().catch(() =>
+      reply?.postMessage({ ok: false, reason: "activation-failed" }),
+    ),
   );
 });
