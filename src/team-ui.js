@@ -1,5 +1,6 @@
 import { cloud, sync } from "./cloud.js";
 import { icon } from "./icons.js";
+import { normalize } from "./domain.js";
 const esc = (value) =>
   String(value ?? "").replace(
     /[&<>"']/g,
@@ -22,70 +23,100 @@ if (url.searchParams.has("invite")) {
   url.hash = "team";
   history.replaceState(null, "", url);
 }
+let adminOpen = false,
+  profileFilter = "";
+function profileButtons() {
+  const rows = (cloud.state.directory?.people || []).filter((person) =>
+    normalize(person.name).includes(normalize(profileFilter)),
+  );
+  return (
+    rows
+      .map(
+        (person) =>
+          `<button class="profile-choice" data-team-action="select-person" data-person="${esc(person.id)}"><span class="avatar" aria-hidden="true">${esc([...person.name.trim()][0])}</span><span><strong>${esc(person.name)}</strong>${person.role ? `<small>${esc(person.role)}</small>` : ""}</span>${icon("chevron", "chevron")}</button>`,
+      )
+      .join("") ||
+    `<p class="muted">${profileFilter ? "No encontramos ese nombre." : "La organización aún no agregó responsables."}</p>`
+  );
+}
+function adminForm() {
+  return panel(
+    `<h2>Administración</h2><form data-team-form="login">${field("Usuario", "username", "text", 'autocomplete="username" autocapitalize="none" spellcheck="false" maxlength="32"')}${field("Contraseña", "password", "password", 'autocomplete="current-password" minlength="8"')}<div class="inline-actions"><button type="submit" class="primary">Entrar</button><button type="submit" class="secondary" name="signup" value="yes">Crear administración</button></div></form><details><summary>Ya tenía una cuenta con correo</summary><p class="small muted">Entra una vez para conservar tu evento y elegir tu nuevo usuario.</p><form data-team-form="legacy-login">${field("Cuenta anterior", "email", "email", 'autocomplete="username"')}${field("Contraseña anterior", "password", "password", 'autocomplete="current-password" minlength="8"')}<button type="submit" class="secondary">Conservar mi cuenta anterior</button></form></details>`,
+  );
+}
+function usernameForm() {
+  return panel(
+    `<h2>Tu usuario de administración</h2><form data-team-form="admin-name">${field("Nombre de usuario", "username", "text", `autocomplete="username" autocapitalize="none" maxlength="32" value="${esc(cloud.adminName)}"`)}<p class="small muted">Conservas tu contraseña y todos tus datos.</p><button class="primary" type="submit">Guardar usuario</button></form>`,
+  );
+}
 export function teamPage(state) {
   const data = cloud.state,
     meta = data.metadata;
-  let html = `<div class="page-head"><h1>Equipo</h1></div><p id="team-message" class="team-message" role="status"></p>`;
+  const picking = cloud.choosingPerson && !adminOpen;
+  let html = `<div class="page-head"><h1>${picking ? "¿Quién eres?" : "Equipo"}</h1></div><p id="team-message" class="team-message" role="status"></p>`;
   if (!cloud.configured)
     return (
       html +
       panel(
-        `<h2>Conectar el evento</h2><p>El servicio compartido todavía no está configurado.</p><details><summary>Configurar conexión</summary><form data-team-form="configure">${field("URL del proyecto", "url", "url", 'autocomplete="url"')}${field("Clave pública · publishable o anon", "publicKey", "text", 'autocomplete="off" spellcheck="false"')}<button class="primary" type="submit">Conectar</button></form></details>`,
+        `<h2>Conectar el evento</h2><p>El servicio compartido todavía no está configurado.</p><details><summary>Configurar conexión</summary><form data-team-form="configure">${field("URL del proyecto", "url", "url")}${field("Clave pública", "publicKey")}<button class="primary" type="submit">Conectar</button></form></details>`,
       )
     );
-  if (cloud.needsPasswordChange)
+  if (cloud.needsPasswordChange && cloud.signedIn && !cloud.anonymous)
     return (
       html +
       panel(
-        `<h2>Tu nueva contraseña</h2><form data-team-form="password">${field("Nueva contraseña", "password", "password", 'minlength="8" autocomplete="new-password"')}<button type="submit" class="primary">Guardar contraseña</button></form>`,
+        `<h2>Tu nueva contraseña</h2><form data-team-form="password">${field("Nueva contraseña", "password", "password", 'minlength="8" autocomplete="new-password"')}<button class="primary" type="submit">Guardar contraseña</button></form>`,
       )
     );
-  if (!cloud.signedIn)
+  if (picking) {
+    html += panel(
+      `<div class="section-head"><h2>${esc(data.directory?.name || "Elige tu nombre")}</h2>${action("refresh-directory", "Actualizar lista")}</div>${data.directoryError ? `<p class="team-message">${esc(data.directoryError)}</p>` : ""}${(data.directory?.people.length || 0) > 8 ? `<label class="search">${icon("search")}<input id="profile-search" type="search" placeholder="Buscar mi nombre" aria-label="Buscar mi nombre" value="${esc(profileFilter)}"></label>` : ""}<div class="profile-grid" id="profile-list">${data.directory ? profileButtons() : `<p class="muted">${data.directoryError ? "Pide el enlace del equipo a la organización." : "Cargando responsables…"}</p>`}</div>`,
+    );
+    if (meta?.queue.length)
+      html += panel(
+        `<p>Tus cambios pendientes del usuario anterior siguen guardados en este teléfono.</p>${action("pending-backup", "Guardar copia de mis cambios")}`,
+      );
+    return html + action("show-admin", "Administración", "text-button");
+  }
+  if (!cloud.signedIn || (adminOpen && cloud.limited))
     return (
       html +
-      panel(
-        `<h2>Entra a tu evento</h2><form data-team-form="login">${field("Correo", "email", "email", `autocomplete="username" value="${esc(data.email)}"`)}${field("Contraseña", "password", "password", 'autocomplete="current-password" minlength="8"')}<div class="inline-actions"><button type="submit" class="primary">Entrar</button><button type="submit" class="secondary" name="signup" value="yes">Crear cuenta</button></div>${cloud.recoveryAvailable ? `<button type="submit" class="text-button" name="recover" formnovalidate>Olvidé mi contraseña</button>` : ""}</form><p class="small muted">Cada responsable entra con su cuenta y la invitación de la organización.</p>`,
-      )
+      adminForm() +
+      (cloud.hasAccessLink
+        ? action("show-picker", "Elegir responsable", "text-button")
+        : panel(
+            `<p class="muted">¿Eres responsable? Abre el enlace que te envió la organización para elegir tu nombre.</p>`,
+          ))
     );
   if (!cloud.connected) {
-    html += panel(
-      `<h2>${inviteCode ? "Tu invitación" : "Tu evento compartido"}</h2><form data-team-form="join">${field("Código de invitación", "code", "text", `autocomplete="off" value="${esc(inviteCode)}"`)}<button class="primary" type="submit">Unirme al evento</button></form>`,
-    );
+    if (cloud.canSetAdminName && !cloud.adminName) html += usernameForm();
     html += panel(
       `<h2>Mis eventos</h2>${data.events.map((event) => action("open", esc(event.name), "menu-row", `data-event="${esc(event.eventId)}"`)).join("")}${action("refresh-events", "Buscar mis eventos")}`,
     );
-    if (cloud.canShareLocal && !inviteCode)
+    if (!cloud.anonymous && cloud.canShareLocal && !data.events.length)
       html += panel(
-        `<h2>Compartir este evento</h2><p>${esc(state.event.name)} · ${state.guests.length} invitados · ${state.tasks.length} tareas</p><p class="small muted">Publica tus datos actuales en un espacio privado para tu equipo. La copia local se conserva.</p>${action("create", "Crear evento compartido", "primary")}`,
+        `<h2>Compartir este evento</h2><p>${esc(state.event.name)} · ${state.guests.length} invitados · ${state.tasks.length} tareas</p><p class="small muted">La copia local se conserva.</p>${action("create", "Crear evento compartido", "primary")}`,
       );
-    return html + action("logout", "Salir de mi cuenta");
+    return html + action("logout", "Salir de administración");
   }
   html += panel(
-    `<div class="team-status-line">${icon("users")}<div><strong>${esc(state.event.name)}</strong><p class="row-meta" data-sync-status>${esc(data.status)}</p></div>${action("sync", "Sincronizar")}</div><p class="small muted">${esc(data.email)} · ${cloud.limited ? "Responsable" : "Organización"}</p>`,
+    `<div class="team-status-line">${icon("users")}<div><strong>${esc(state.event.name)}</strong><p class="row-meta" data-sync-status>${esc(data.status)}</p></div>${action("sync", "Sincronizar")}</div><p class="small muted">${esc(data.displayName)} · ${cloud.limited ? "Responsable" : "Administración"}</p>`,
   );
-  if (meta?.conflicts?.length) {
+  if (meta?.conflicts?.length)
     html += panel(
-      `<h2>Revisar cambios</h2><p>También editaron estos datos desde otro teléfono. Tu edición sigue guardada.</p><ul>${meta.conflicts.map((item) => `<li>${esc(item.title)}</li>`).join("")}</ul><details><summary>Ver mis cambios pendientes</summary>${pendingDetails(meta)}</details><div class="inline-actions">${action("keep-mine", "Conservar mis cambios", "primary")}${action("use-shared", "Usar cambios compartidos")}${action("pending-backup", "Guardar copia de mis cambios")}</div><p class="small muted">La elección afecta a tus cambios pendientes. Guardamos una copia anterior a la revisión en este teléfono.</p>`,
+      `<h2>Revisar cambios</h2><p>También editaron estos datos desde otro teléfono. Tu edición sigue guardada.</p><ul>${meta.conflicts.map((item) => `<li>${esc(item.title)}</li>`).join("")}</ul><details><summary>Ver mis cambios pendientes</summary>${pendingDetails(meta)}</details><div class="inline-actions">${action("keep-mine", "Conservar mis cambios", "primary")}${action("use-shared", "Usar cambios compartidos")}${action("pending-backup", "Guardar copia de mis cambios")}</div><p class="small muted">Guardamos una copia anterior a la revisión en este teléfono.</p>`,
     );
-  }
-  if (!cloud.limited) {
-    html += panel(
-      `<h2>Invitar al equipo</h2>${state.people.length ? `<form data-team-form="invite"><label class="field"><span>Responsable</span><select name="personId">${state.people.map((person) => `<option value="${esc(person.id)}">${esc(person.name)}</option>`).join("")}</select></label><p class="small muted">Puede colaborar en tareas e itinerario y consultar el evento. Sin acceso a dinero ni eliminación de registros.</p><button type="submit" class="primary">Crear invitación</button></form>` : `<p>Agrega primero a tus responsables al directorio.</p><a href="#people" class="secondary">Agregar responsables</a>`}${data.invitationLink ? `<div class="team-invitation"><label class="field"><span>Invitación personal · un uso · 7 días</span><input readonly aria-label="Enlace de invitación" value="${esc(data.invitationLink)}"></label>${action("copy-invite", "Copiar invitación", "primary")}</div>` : ""}`,
-    );
-    html += panel(
-      `<div class="section-head"><h2>Personas con acceso</h2>${action("refresh-members", "Actualizar")}</div>${data.members.length ? data.members.map((member) => `<div class="team-member"><div><strong>${esc(state.people.find((p) => p.id === member.personId)?.name || member.displayName)}</strong><p class="row-meta">${esc(member.displayName)} · ${member.active ? (member.role === "member" ? "Responsable" : "Organización") : "Acceso retirado"}</p></div>${member.active && member.role !== "owner" && member.userId !== cloud.member.userId ? action("revoke", "Retirar acceso", "secondary", `data-user="${esc(member.userId)}"`) : ""}</div>`).join("") : "<p class='muted'>Pulsa Actualizar para consultar el equipo.</p>"}${data.invitations
-        .filter(
-          (i) =>
-            !i.used_by && !i.cancelled && Date.parse(i.expires_at) > Date.now(),
-        )
-        .map(
-          (i) =>
-            `<div class="team-member"><span>Invitación pendiente · ${esc(state.people.find((p) => p.id === i.person_id)?.name || "Organización")}</span>${action("cancel-invite", "Cancelar", "secondary", `data-invitation="${esc(i.id)}"`)}</div>`,
-        )
-        .join("")}`,
-    );
-  }
-  return html + action("logout", "Salir de mi cuenta");
+  if (cloud.limited) return html + action("change-person", "Cambiar usuario");
+  if (!cloud.adminName) html += usernameForm();
+  html += panel(
+    `<h2>Acceso del equipo</h2><p class="small muted">Tus responsables eligen su nombre, sin correo ni contraseña. El directorio define quién puede entrar.</p>${data.invitationLink ? `<label class="field"><span>Enlace del equipo</span><input readonly aria-label="Enlace del equipo" value="${esc(data.invitationLink)}"></label>${action("copy-invite", "Copiar enlace", "primary")}` : action("share-link", "Crear enlace del equipo", "primary")}`,
+  );
+  html += panel(
+    `<div class="section-head"><h2>${state.people.length} responsables</h2></div>${state.people.map((person) => `<div class="team-member"><div><strong>${esc(person.name)}</strong><p class="row-meta">${esc(person.role)}</p></div></div>`).join("") || `<p class="muted">Agrega a tus responsables para que aparezcan en el acceso.</p>`}<a class="secondary" href="#people">Responsables y contactos</a>`,
+  );
+  if (cloud.adminName)
+    html += `<details class="team-account"><summary>Cambiar mi usuario de administración</summary>${usernameForm()}</details>`;
+  return html + action("logout", "Salir de administración");
 }
 function pendingDetails(meta) {
   const names = {
@@ -127,46 +158,73 @@ function pendingDetails(meta) {
 }
 export async function teamSubmit(form, submitter, state) {
   const values = Object.fromEntries(new FormData(form));
-  if (submitter?.name === "recover")
-    return await cloud.recoverPassword(values.email);
   if (form.dataset.teamForm === "password")
     return await cloud.updatePassword(values.password);
   if (form.dataset.teamForm === "configure")
     cloud.configure(values.url, values.publicKey);
-  else if (form.dataset.teamForm === "login") {
+  else if (
+    form.dataset.teamForm === "login" ||
+    form.dataset.teamForm === "legacy-login"
+  ) {
+    const legacy = form.dataset.teamForm === "legacy-login";
     const result = await cloud.login(
-      values.email,
+      legacy ? values.email : values.username,
       values.password,
       submitter?.name === "signup",
+      legacy,
     );
+    adminOpen = false;
     if (result.confirmation)
-      return "Revisa tu correo para confirmar la cuenta y después entra con tu contraseña.";
-  } else if (form.dataset.teamForm === "join") {
-    await cloud.join(values.code);
-    sessionStorage.removeItem("nupcial-invitation");
-    inviteCode = "";
-  } else if (form.dataset.teamForm === "invite")
-    await cloud.invite(values.personId, "member");
+      return "La organización debe habilitar la entrada con contraseña sin confirmación por correo.";
+    if (cloud.connected && cloud.adminName) return { route: "home" };
+  } else if (form.dataset.teamForm === "admin-name") {
+    await cloud.setAdminName(values.username);
+    return "Usuario guardado. Tu contraseña se conserva.";
+  }
 }
 export async function teamAction(button, state) {
-  const action = button.dataset.teamAction;
-  if (action === "view-mine") cloud.setView("mine");
-  else if (action === "view-all") cloud.setView("all");
-  else if (action === "create") await cloud.create(state);
-  else if (action === "open") await cloud.open(button.dataset.event);
-  else if (action === "refresh-events") await cloud.loadEvents();
-  else if (action === "sync") await sync();
-  else if (action === "logout") await cloud.logout();
-  else if (action === "refresh-members") await cloud.management();
-  else if (action === "revoke") await cloud.revoke(button.dataset.user);
-  else if (action === "cancel-invite")
-    await cloud.cancelInvitation(button.dataset.invitation);
-  else if (action === "keep-mine") await cloud.resolve(true);
-  else if (action === "use-shared") await cloud.resolve(false);
-  else if (action === "copy-invite") {
+  const key = button.dataset.teamAction;
+  if (key === "show-admin") {
+    adminOpen = true;
+    return;
+  }
+  if (key === "show-picker") {
+    adminOpen = false;
+    await cloud.loadDirectory();
+    return;
+  }
+  if (key === "select-person") {
+    await cloud.choosePerson(button.dataset.person);
+    adminOpen = false;
+    return { route: "home" };
+  }
+  if (key === "change-person") {
+    adminOpen = false;
+    await cloud.changePerson();
+    return;
+  }
+  if (key === "refresh-directory") {
+    await cloud.loadDirectory();
+    return;
+  }
+  if (key === "share-link") await cloud.share();
+  else if (key === "view-mine") cloud.setView("mine");
+  else if (key === "view-all") cloud.setView("all");
+  else if (key === "create") await cloud.create(state);
+  else if (key === "open") {
+    await cloud.open(button.dataset.event);
+    return { route: cloud.adminName || cloud.limited ? "home" : "team" };
+  } else if (key === "refresh-events") await cloud.loadEvents();
+  else if (key === "sync") await sync();
+  else if (key === "logout") {
+    adminOpen = false;
+    await cloud.logout();
+  } else if (key === "keep-mine") await cloud.resolve(true);
+  else if (key === "use-shared") await cloud.resolve(false);
+  else if (key === "copy-invite") {
     await navigator.clipboard.writeText(cloud.state.invitationLink);
-    return "Invitación copiada. Compártela solo con esa persona.";
-  } else if (action === "pending-backup") {
+    return "Enlace copiado. Compártelo con tu equipo.";
+  } else if (key === "pending-backup") {
     const url = URL.createObjectURL(
       new Blob([await cloud.pendingBackup()], { type: "application/json" }),
     );
@@ -177,3 +235,9 @@ export async function teamAction(button, state) {
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
 }
+document.addEventListener("input", (event) => {
+  if (event.target.id !== "profile-search") return;
+  profileFilter = event.target.value;
+  const list = document.querySelector("#profile-list");
+  if (list) list.innerHTML = profileButtons();
+});

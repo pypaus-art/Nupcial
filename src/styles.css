@@ -3035,3 +3035,69 @@ body.home-open {
 .home-page .team-scope {
   margin: 0;
 }
+
+/* The first identity choice stays in place until a profile or administrator signs in. */
+body.access-open .bottom-nav,
+body.access-open .desktop-foot {
+  display: none;
+}
+body.access-open #main {
+  padding-bottom: 24px;
+}
+.profile-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+.profile-choice {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 92px;
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--paper);
+  padding: 14px;
+  text-align: left;
+}
+.profile-choice > span:nth-child(2) {
+  min-width: 0;
+  flex: 1;
+}
+.profile-choice strong {
+  display: block;
+  font-size: 20px;
+  overflow-wrap: anywhere;
+}
+.profile-choice small {
+  display: block;
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 4px;
+  overflow-wrap: anywhere;
+}
+.profile-choice .avatar {
+  width: 30px;
+  height: 30px;
+  flex-shrink: 0;
+}
+.profile-choice .chevron {
+  width: 16px;
+  flex-shrink: 0;
+}
+.profile-choice[aria-busy="true"] {
+  background: var(--wash);
+}
+.team-account {
+  margin: 20px 0;
+}
+.team-account > summary {
+  cursor: pointer;
+  padding: 12px;
+}
+@media (max-width: 360px) {
+  .profile-grid {
+    grid-template-columns: 1fr;
+  }
+}

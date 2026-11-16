@@ -324,6 +324,7 @@ async function routeTo() {
 function render() {
   if (!state) return;
   if (cloud.needsEvent) route = "team";
+  document.body.classList.toggle("access-open", cloud.needsEvent);
   if (cloud.limited && ["backup", "garden"].includes(route)) route = "home";
   const previousProgress =
     main.dataset.route === route
@@ -583,7 +584,7 @@ function vendorsPage() {
     `<div class="list">${vendors.map((v) => `<button class="list-row" data-open="vendors" data-id="${esc(v.id)}">${icon("wallet")}<div class="row-content"><div class="row-title">${esc(v.name)}</div><div class="row-meta">${esc(v.service)}${v.refundable ? " · Reembolsable" : ""}</div></div><div class="row-end"><strong>${money(remaining(state, v))}</strong><span>${remaining(state, v) > 0 ? "pendiente" : "pagado"}</span></div></button>`).join("") || empty("Cuentas claras", "Registra el total acordado; después podrás agregar cada abono.", "new-vendors", "Agregar proveedor", "wallet")}</div>${state.vendors.some((v) => v.refundable) ? '<p class="finance-note">Depósitos reembolsables separados del gasto.</p>' : ""}`
   );
 }
-const APP_VERSION = "0.7.0";
+const APP_VERSION = "0.8.0";
 let appWorkerRegistration,
   updateBusy = false,
   updateLabel = "Actualizar Nupcial",
@@ -1913,6 +1914,8 @@ document.addEventListener("click", async (e) => {
   }
   const open = e.target.closest("[data-open]");
   if (open) {
+    // A sync may have committed just before its repaint; open the current cached record.
+    state = await load();
     openEntity(open.dataset.open, open.dataset.id);
     return;
   }
@@ -2376,6 +2379,10 @@ function teamHasDraft() {
 channel?.addEventListener("message", syncExternal);
 window.addEventListener("nupcial:remote-change", syncExternal);
 window.addEventListener("nupcial:sync-status", connection);
+window.addEventListener("nupcial:access-change", () => {
+  if (state && (cloud.needsEvent || route === "team") && !teamHasDraft())
+    render();
+});
 async function runTeam(work, control) {
   if (control.getAttribute("aria-busy") === "true") return;
   control.setAttribute("aria-busy", "true");
@@ -2385,9 +2392,13 @@ async function runTeam(work, control) {
   try {
     const message = await work();
     state = await load();
+    if (message?.route) {
+      route = message.route;
+      history.replaceState(null, "", `#${route}`);
+    }
     if (cloud.limited && ["backup", "garden"].includes(route)) route = "home";
     render();
-    if (message) toast(message);
+    if (typeof message === "string" && message) toast(message);
   } catch (e) {
     const el = $("#team-message");
     if (el) {

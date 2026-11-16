@@ -1,4 +1,6 @@
 import { CLOUD_CONFIG } from "./cloud-config.js";
+import { adminAlias, adminUsername } from "./access-model.js";
+import { equal } from "./sync-model.js";
 import {
   openCloud,
   selectCloud,
@@ -12,6 +14,20 @@ import {
 const SESSION = "nupcial-cloud-session",
   CONTEXT = "nupcial-cloud-context",
   SETTINGS = "nupcial-cloud-settings";
+const ACCESS = "nupcial-team-access";
+let accessCode = localStorage.getItem(ACCESS) || "",
+  selectingIdentity = false,
+  directory = null,
+  directoryWork = null,
+  directoryError = "";
+const incoming = new URL(location.href);
+if (incoming.searchParams.has("access")) {
+  accessCode = incoming.searchParams.get("access");
+  localStorage.setItem(ACCESS, accessCode);
+  incoming.searchParams.delete("access");
+  incoming.hash = "team";
+  history.replaceState(null, "", incoming);
+}
 const read = (key) => {
   try {
     return JSON.parse(localStorage.getItem(key));
@@ -74,9 +90,11 @@ async function auth(path, body) {
   const data = await response.json();
   if (!response.ok)
     throw new Error(
-      path.startsWith("token")
-        ? "No pudimos iniciar sesión. Revisa tu correo y contraseña, o confirma tu correo si acabas de registrarte."
-        : "No pudimos crear la cuenta. Revisa los datos o inténtalo más tarde.",
+      path.includes("refresh_token")
+        ? "Tu sesión necesita renovarse. Vuelve a entrar."
+        : body?.email
+          ? "No pudimos entrar. Revisa tu usuario y contraseña."
+          : "No se pudo abrir el acceso sin registro. Pide a la organización que revise la conexión del equipo.",
     );
   return data;
 }
@@ -118,8 +136,8 @@ async function accessToken() {
   await refreshing;
   return session.access_token;
 }
-async function invoke(body) {
-  const token = await accessToken();
+async function invoke(body, suppliedToken = null) {
+  const token = suppliedToken || (await accessToken());
   const response = await request(`${config.url}/functions/v1/nupcial`, {
     method: "POST",
     headers: {
@@ -134,7 +152,7 @@ async function invoke(body) {
     const e = new Error(data.error || "No se pudo conectar con el evento.");
     e.status = response.status;
     e.conflicts = data.conflicts;
-    if (e.status === 401) loginNeeded = true;
+    if (e.status === 401 && !suppliedToken) loginNeeded = true;
     throw e;
   }
   return data;
@@ -142,8 +160,10 @@ async function invoke(body) {
 async function activate(snapshot) {
   if (
     active &&
-    active.eventId !== snapshot.eventId &&
-    (await readSync())?.queue.length
+    (active.eventId !== snapshot.eventId ||
+      active.userId !== session.user.id) &&
+    (await readSync())?.queue.length &&
+    !metadata?.blocked
   )
     throw new Error(
       "Sincroniza los cambios pendientes antes de cambiar de evento.",
@@ -155,21 +175,32 @@ async function activate(snapshot) {
   metadata = await readSync();
   members = [];
   invitations = [];
-  invitationLink = "";
+  invitationLink =
+    localStorage.getItem(`nupcial-share:${active.eventId}`) || "";
+  selectingIdentity = false;
   setStatus("Sincronizado");
   changed();
   start();
 }
 function start() {
   clearInterval(timer);
-  if (active)
+  if (active || accessCode)
     timer = setInterval(() => {
-      if (!document.hidden) sync();
+      if (!document.hidden) {
+        if (active && !selectingIdentity && !metadata?.blocked) sync();
+        else if (accessCode) cloud.loadDirectory().catch(() => {});
+      }
     }, 3000);
 }
 export async function sync() {
   if (work) return work;
   if (!active) return;
+  if (!session || session.user.id !== active.userId) {
+    loginNeeded = true;
+    setStatus("El usuario cambió en otra ventana. Elige quién eres de nuevo.");
+    window.dispatchEvent(new Event("nupcial:access-change"));
+    return;
+  }
   work = (async () => {
     if (!navigator.onLine) {
       metadata = await readSync();
@@ -183,8 +214,14 @@ export async function sync() {
     try {
       metadata = await readSync();
       if (metadata.conflicts?.length) {
-        setStatus("Hay cambios por revisar");
-        return;
+        await acceptCloud(
+          await invoke({ action: "pull", eventId: active.eventId }),
+        );
+        metadata = await readSync();
+        if (metadata.conflicts?.length) {
+          setStatus("Hay cambios por revisar");
+          return;
+        }
       }
       if (metadata.queue.length) setStatus("Sincronizando…");
       for (let count = 0; count < 20; count++) {
@@ -194,6 +231,7 @@ export async function sync() {
         const result = await invoke({
           action: "patch",
           eventId: active.eventId,
+          actingPerson: metadata.member.personId,
           ...batch,
         });
         const accepted = await acceptCloud(result, result.acknowledged);
@@ -253,6 +291,8 @@ export async function sync() {
         await markSyncBlocked(true);
         metadata = await readSync();
         setStatus("Acceso retirado · contacta a la organización");
+        window.dispatchEvent(new Event("nupcial:access-change"));
+        if (accessCode) cloud.loadDirectory().catch(() => {});
       } else {
         if (e.status === 401) loginNeeded = true;
         setStatus(e.message);
@@ -287,9 +327,28 @@ export const cloud = {
   },
   get needsEvent() {
     return (
-      localStorage.getItem("nupcial-shared-enabled") === "true" &&
-      (!active || !this.signedIn)
+      this.configured &&
+      (!active || !this.signedIn || selectingIdentity || !!metadata?.blocked)
     );
+  },
+  get hasAccessLink() {
+    return !!accessCode;
+  },
+  get choosingPerson() {
+    return (
+      !!accessCode &&
+      this.needsEvent &&
+      (!session || session.user.is_anonymous || this.limited)
+    );
+  },
+  get anonymous() {
+    return !!session?.user?.is_anonymous;
+  },
+  get adminName() {
+    return session?.user?.user_metadata?.username || "";
+  },
+  get canSetAdminName() {
+    return !!session && !session.user.is_anonymous && !this.limited;
   },
   get canShareLocal() {
     const owner = localStorage.getItem("nupcial-local-owner");
@@ -342,6 +401,11 @@ export const cloud = {
       events,
       invitationLink,
       email: session?.user?.email || "",
+      displayName: this.limited
+        ? metadata.member.displayName
+        : this.adminName || "Administración",
+      directory,
+      directoryError,
       loginNeeded,
     };
   },
@@ -400,6 +464,11 @@ export const cloud = {
           })
           .catch(() => {}),
       );
+    if (accessCode) {
+      start();
+      if (this.choosingPerson)
+        queueMicrotask(() => this.loadDirectory().catch(() => {}));
+    }
   },
   configure(url, publicKey) {
     url = url.trim().replace(/\/$/, "");
@@ -433,12 +502,13 @@ export const cloud = {
     localStorage.setItem(SETTINGS, JSON.stringify(config));
     notify();
   },
-  async login(email, password, signup = false) {
+  async login(username, password, signup = false, legacy = false) {
     if (password.length < 8)
       throw new Error("Usa una contraseña de al menos 8 caracteres.");
     const data = await auth(signup ? "signup" : "token?grant_type=password", {
-      email: email.trim(),
+      email: legacy ? username.trim() : adminAlias(username),
       password,
+      ...(signup ? { data: { username: adminUsername(username) } } : {}),
     });
     if (!data.access_token) return { confirmation: true };
     if (
@@ -460,8 +530,120 @@ export const cloud = {
       localStorage.removeItem(CONTEXT);
     }
     events = (await invoke({ action: "events" })).events;
+    if (events.length === 1 && !accessCode) await this.open(events[0].eventId);
     notify();
     return {};
+  },
+  async setAdminName(username) {
+    const data = await invoke({
+      action: "admin-username",
+      username: adminUsername(username),
+    });
+    persistSession({ ...session, user: data.user });
+    notify();
+  },
+  async loadDirectory() {
+    if (directoryWork) return directoryWork;
+    directoryWork = (async () => {
+      try {
+        const response = await request(`${config.url}/functions/v1/nupcial`, {
+          method: "POST",
+          headers: {
+            apikey: config.publicKey,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ action: "directory", code: accessCode }),
+        });
+        const data = await response.json();
+        if (!response.ok)
+          throw new Error(
+            data.error || "No se pudo abrir el enlace del equipo.",
+          );
+        const updated = !equal(directory, data) || !!directoryError;
+        directory = data;
+        directoryError = "";
+        if (updated) window.dispatchEvent(new Event("nupcial:access-change"));
+      } catch (e) {
+        directoryError = e.message;
+        window.dispatchEvent(new Event("nupcial:access-change"));
+        throw e;
+      }
+    })().finally(() => {
+      directoryWork = null;
+    });
+    return directoryWork;
+  },
+  async choosePerson(personId) {
+    if (!navigator.onLine)
+      throw new Error("Conéctate para elegir tu usuario por primera vez.");
+    if (work) await work;
+    if (active && !metadata?.blocked) {
+      await sync();
+      if ((await readSync()).queue.length)
+        throw new Error(
+          "Primero sincroniza tus cambios pendientes antes de cambiar de usuario.",
+        );
+    }
+    if (
+      active &&
+      !metadata?.blocked &&
+      this.signedIn &&
+      metadata.member.personId === personId
+    ) {
+      await activate(
+        await invoke({ action: "select-person", code: accessCode, personId }),
+      );
+      this.setView("mine");
+      return;
+    }
+    const fresh = await auth("signup", { data: {} });
+    if (!fresh.access_token || !fresh.user?.is_anonymous)
+      throw new Error(
+        "La organización debe activar el acceso sin registro del equipo.",
+      );
+    const snapshot = await invoke(
+      { action: "select-person", code: accessCode, personId },
+      fresh.access_token,
+    );
+    if (active && !metadata?.blocked && (await readSync()).queue.length)
+      throw new Error(
+        "Se guardaron cambios en otra ventana. Sincronízalos antes de cambiar de usuario.",
+      );
+    persistSession(clockSession(fresh));
+    await activate(snapshot);
+    this.setView("mine");
+  },
+  async changePerson() {
+    if (work) await work;
+    if (active && !metadata?.blocked) {
+      await sync();
+      if ((await readSync()).queue.length)
+        throw new Error(
+          "Hay cambios pendientes. Sincronízalos antes de elegir otro usuario.",
+        );
+    }
+    selectingIdentity = true;
+    window.dispatchEvent(new Event("nupcial:access-change"));
+    await this.loadDirectory();
+  },
+  async share() {
+    await sync();
+    if ((await readSync()).queue.length)
+      throw new Error(
+        "Espera a que se guarden tus responsables antes de compartir el enlace.",
+      );
+    const data = await invoke({
+      action: "share-link",
+      eventId: active.eventId,
+    });
+    const link = new URL(location.pathname, location.origin);
+    link.searchParams.set("access", data.code);
+    link.hash = "team";
+    invitationLink = link.href;
+    localStorage.setItem(`nupcial-share:${active.eventId}`, invitationLink);
+    accessCode = data.code;
+    localStorage.setItem(ACCESS, accessCode);
+    notify();
   },
   async recoverPassword(email) {
     if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))
@@ -582,7 +764,12 @@ export const cloud = {
     localStorage.removeItem(CONTEXT);
     selectLocal();
     setStatus("Solo en este teléfono");
+    selectingIdentity = false;
     changed();
+    if (accessCode) {
+      start();
+      this.loadDirectory().catch(() => {});
+    }
   },
   async pendingBackup() {
     return JSON.stringify(
@@ -611,6 +798,11 @@ window.addEventListener("storage", (event) => {
     if (!session && active) {
       loginNeeded = true;
       setStatus("Inicia sesión para sincronizar.");
+    }
+    if (active && session?.user?.id !== active.userId) {
+      loginNeeded = true;
+      clearInterval(timer);
+      window.dispatchEvent(new Event("nupcial:access-change"));
     }
   }
 });
