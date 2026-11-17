@@ -10,6 +10,8 @@ import {
   amountCents,
   countdown,
   SCHEMA,
+  responsibleIds,
+  assignedTo,
 } from "./domain.js";
 import { openDatabase, load, commit, recovery } from "./storage.js";
 import { icon } from "./icons.js";
@@ -93,6 +95,10 @@ const personMeta = (pid) => {
   const p = state.people.find((p) => p.id === pid);
   return p ? [p.name, p.phone].filter(Boolean).join(" · ") : "Sin responsable";
 };
+const responsibleNames = (record) =>
+  responsibleIds(record).map(personName).join(" · ");
+const responsibleMeta = (record) =>
+  responsibleIds(record).map(personMeta).join(" / ") || "Sin responsable";
 const tableFor = (gid) =>
   state.tables.find((t) =>
     state.assignments.some((a) => a.guestId === gid && a.tableId === t.id),
@@ -409,7 +415,7 @@ function authoredLabel(collection, id) {
 }
 function memberActivities() {
   const entries = state.agenda
-    .filter((a) => a.personId === cloud.member.personId)
+    .filter((a) => assignedTo(a, cloud.member.personId))
     .sort(byStart);
   return `<div class="section-head"><h2>Mis actividades</h2></div><div class="list">${entries.map((a) => `<button class="list-row ${authoredClass("agenda", a.id)}" data-open="agenda" data-id="${esc(a.id)}"><strong>${esc(a.start)}</strong><div class="row-content"><div class="row-title">${esc(a.title)}</div>${authoredLabel("agenda", a.id)}</div>${icon("chevron", "chevron")}</button>`).join("") || `<p class="muted">No tienes actividades asignadas.</p>`}</div>`;
 }
@@ -428,7 +434,7 @@ function homePage() {
     scopeControl() +
     `<h1 class="sr-only">Inicio</h1><section class="countdown home-countdown" aria-label="Cuenta regresiva al evento"><div id="countdown" class="countdown-values"></div></section>
   <div class="bento home-bento">
-    <button class="card home-next" data-go="agenda"><span class="tile-icon">${icon("calendar")}</span><div class="next-content"><span class="card-label">${upcoming?.status === "active" ? "En curso" : "Próxima actividad"}</span>${upcoming ? `<div class="home-time">${upcoming.start}</div><h2 class="next-title">${esc(upcoming.title)}</h2>${upcoming.personId ? `<p class="tile-detail">${esc(personName(upcoming.personId))}</p>` : ""}` : '<h2 class="next-title">Agenda completada</h2>'}</div></button>
+    <button class="card home-next" data-go="agenda"><span class="tile-icon">${icon("calendar")}</span><div class="next-content"><span class="card-label">${upcoming?.status === "active" ? "En curso" : "Próxima actividad"}</span>${upcoming ? `<div class="home-time">${upcoming.start}</div><h2 class="next-title">${esc(upcoming.title)}</h2>${responsibleIds(upcoming).length ? `<p class="tile-detail">${esc(responsibleNames(upcoming))}</p>` : ""}` : '<h2 class="next-title">Agenda completada</h2>'}</div></button>
     <button class="card home-tasks" data-go="tasks"><span class="tile-icon">${icon("tasks")}</span><div class="tile-main"><strong class="tile-number">${String(tasks.length).padStart(2, "0")}</strong><span class="tile-label">Pendientes</span></div><div class="tile-bottom">${progressBar("Tareas completadas", done, state.tasks.length)}<span class="tile-detail">${percentage(done, state.tasks.length)}%</span></div></button>
     <button class="card home-vendors" data-go="vendors"><span class="tile-icon">${icon("truck")}</span><div class="tile-main">${cloud.limited ? `<strong class="tile-ratio">${state.vendors.length}</strong><span class="tile-label">Proveedores</span>` : `<strong class="tile-ratio">${String(settled).padStart(2, "0")}<span> / ${String(state.vendors.length).padStart(2, "0")}</span></strong><span class="tile-label">Proveedores</span><span class="tile-detail">${pendingVendors} por liquidar</span>`}</div></button>
     <button class="card home-guests" data-go="guests"><div class="tile-top"><span class="tile-icon">${icon("users")}</span><span class="pill">${percentage(assigned, state.guests.length)}%</span></div><div class="tile-main"><strong class="tile-ratio">${assigned}<span> / ${state.guests.length}</span></strong><span class="tile-label">Invitados</span><span class="tile-detail">${state.tables.length} ${state.tables.length === 1 ? "mesa" : "mesas"}</span></div></button>
@@ -458,7 +464,7 @@ function agendaPage() {
     .sort(byStart)
     .filter(
       (a) =>
-        (!cloud.mine || a.personId === cloud.member.personId) &&
+        (!cloud.mine || assignedTo(a, cloud.member.personId)) &&
         (filter === "all" || a.status === filter),
     );
   return (
@@ -470,11 +476,11 @@ function agendaPage() {
         button("new-agenda", "Agregar actividad"),
       state.agenda.filter(
         (a) =>
-          (!cloud.mine || a.personId === cloud.member.personId) &&
+          (!cloud.mine || assignedTo(a, cloud.member.personId)) &&
           a.status === "done",
       ).length,
       state.agenda.filter(
-        (a) => !cloud.mine || a.personId === cloud.member.personId,
+        (a) => !cloud.mine || assignedTo(a, cloud.member.personId),
       ).length,
       "Completadas",
     ) +
@@ -484,12 +490,12 @@ function agendaPage() {
       ["active", "En curso"],
       ["done", "Finalizado"],
     ]) +
-    `<div class="list">${entries.map((a) => `<button class="list-row agenda-row ${authoredClass("agenda", a.id)}" data-open="agenda" data-id="${esc(a.id)}"><div class="agenda-time">${a.start}<small><span>${a.end || "por definir"}</span>${a.status === "done" ? `<span class="agenda-finished" aria-label="Finalizado">${icon("circle-check")}</span>` : ""}</small></div><div class="row-content"><div class="row-title">${esc(a.title)}</div>${a.personId || a.location ? `<div class="row-meta">${esc([a.personId ? personName(a.personId) : null, a.location].filter(Boolean).join(" · "))}</div>` : ""}${a.endNote ? `<p class="row-meta">${esc(a.endNote)}</p>` : ""}${authoredLabel("agenda", a.id)}${a.status === "active" ? `<span class="pill">${labels[a.status]}</span>` : ""}</div>${icon("chevron", "chevron")}</button>`).join("") || empty("Sin actividades", "No hay actividades con este estado.", "new-agenda", "Agregar actividad", "calendar")}</div>`
+    `<div class="list">${entries.map((a) => `<button class="list-row agenda-row ${authoredClass("agenda", a.id)}" data-open="agenda" data-id="${esc(a.id)}"><div class="agenda-time">${a.start}<small><span>${a.end || "por definir"}</span>${a.status === "done" ? `<span class="agenda-finished" aria-label="Finalizado">${icon("circle-check")}</span>` : ""}</small></div><div class="row-content"><div class="row-title">${esc(a.title)}</div>${responsibleIds(a).length || a.location ? `<div class="row-meta">${esc([responsibleIds(a).length ? responsibleNames(a) : null, a.location].filter(Boolean).join(" · "))}</div>` : ""}${a.endNote ? `<p class="row-meta">${esc(a.endNote)}</p>` : ""}${authoredLabel("agenda", a.id)}${a.status === "active" ? `<span class="pill">${labels[a.status]}</span>` : ""}</div>${icon("chevron", "chevron")}</button>`).join("") || empty("Sin actividades", "No hay actividades con este estado.", "new-agenda", "Agregar actividad", "calendar")}</div>`
   );
 }
 function tasksPage() {
   const visible = state.tasks.filter(
-    (t) => !cloud.mine || t.personId === cloud.member.personId,
+    (t) => !cloud.mine || assignedTo(t, cloud.member.personId),
   );
   const tasks = visible.filter((t) => filter === "all" || t.status === filter);
   const done = visible.filter((t) => t.status === "done").length;
@@ -509,7 +515,7 @@ function tasksPage() {
       ["doing", "En curso"],
       ["done", "Terminadas"],
     ]) +
-    `<div class="list">${tasks.map((t) => `<button class="list-row ${authoredClass("tasks", t.id)}" data-open="tasks" data-id="${esc(t.id)}"><span class="task-status" aria-label="${t.status === "done" ? "Terminada" : labels[t.status]}"><span class="status-icon ${t.priority}" aria-label="${t.status === "done" ? "Terminada" : `Prioridad ${t.priority === "urgent" ? "urgente" : "normal"}`}">${icon(t.status === "done" ? "circle-check" : t.priority === "urgent" ? "urgent" : "circle")}</span><span class="task-steps" aria-hidden="true">${[1, 2, 3].map((step) => `<i class="${step <= (t.status === "done" ? 3 : t.status === "doing" ? 2 : 1) ? "filled" : ""}"></i>`).join("")}</span></span><div class="row-content"><div class="row-title">${esc(t.title)}</div><div class="row-meta">${!t.personId ? `<span class="unassigned-marker">${icon("unassigned")}Sin responsable</span>` : esc(personName(t.personId))}${t.due ? " · " + esc(t.due) : ""}</div>${authoredLabel("tasks", t.id)}</div>${icon("chevron", "chevron")}</button>`).join("") || empty("Una cosa a la vez", "Anota lo que falta y asígnalo a la persona indicada.", "new-tasks", "Agregar tarea", "tasks")}</div>`
+    `<div class="list">${tasks.map((t) => `<button class="list-row ${authoredClass("tasks", t.id)}" data-open="tasks" data-id="${esc(t.id)}"><span class="task-status" aria-label="${t.status === "done" ? "Terminada" : labels[t.status]}"><span class="status-icon ${t.priority}" aria-label="${t.status === "done" ? "Terminada" : `Prioridad ${t.priority === "urgent" ? "urgente" : "normal"}`}">${icon(t.status === "done" ? "circle-check" : t.priority === "urgent" ? "urgent" : "circle")}</span><span class="task-steps" aria-hidden="true">${[1, 2, 3].map((step) => `<i class="${step <= (t.status === "done" ? 3 : t.status === "doing" ? 2 : 1) ? "filled" : ""}"></i>`).join("")}</span></span><div class="row-content"><div class="row-title">${esc(t.title)}</div><div class="row-meta">${!responsibleIds(t).length ? `<span class="unassigned-marker">${icon("unassigned")}Sin responsable</span>` : esc(responsibleNames(t))}${t.due ? " · " + esc(t.due) : ""}</div>${authoredLabel("tasks", t.id)}</div>${icon("chevron", "chevron")}</button>`).join("") || empty("Una cosa a la vez", "Anota lo que falta y asígnalo a la persona indicada.", "new-tasks", "Agregar tarea", "tasks")}</div>`
   );
 }
 function guestsPage() {
@@ -584,7 +590,7 @@ function vendorsPage() {
     `<div class="list">${vendors.map((v) => `<button class="list-row" data-open="vendors" data-id="${esc(v.id)}">${icon("wallet")}<div class="row-content"><div class="row-title">${esc(v.name)}</div><div class="row-meta">${esc(v.service)}${v.refundable ? " · Reembolsable" : ""}</div></div><div class="row-end"><strong>${money(remaining(state, v))}</strong><span>${remaining(state, v) > 0 ? "pendiente" : "pagado"}</span></div></button>`).join("") || empty("Cuentas claras", "Registra el total acordado; después podrás agregar cada abono.", "new-vendors", "Agregar proveedor", "wallet")}</div>${state.vendors.some((v) => v.refundable) ? '<p class="finance-note">Depósitos reembolsables separados del gasto.</p>' : ""}`
   );
 }
-const APP_VERSION = "0.8.0";
+const APP_VERSION = "0.9.0";
 let appWorkerRegistration,
   updateBusy = false,
   updateLabel = "Actualizar Nupcial",
@@ -1208,6 +1214,10 @@ const personSelect = (value) =>
     [["", "Sin responsable"], ...state.people.map((p) => [p.id, p.name])],
     true,
   );
+function peopleChoices(record) {
+  const selected = responsibleIds(record);
+  return `<fieldset class="choice-field wide"><legend>Responsables</legend><div class="choice-grid" style="--columns:2">${state.people.map((person) => `<label class="choice"><input type="checkbox" name="personIds" value="${esc(person.id)}" ${selected.includes(person.id) ? "checked" : ""}><span>${esc(person.name)}</span></label>`).join("") || `<span class="muted">Sin responsables en el directorio.</span>`}</div></fieldset>`;
+}
 const actions = (collection, entityId) =>
   `<div class="form-actions">${entityId ? `<button type="button" class="danger" data-delete="${collection}" data-id="${esc(entityId)}" aria-label="Eliminar ${collection === "guests" ? "invitado" : collection === "tables" ? "mesa" : "registro"}">${icon("trash")}</button>` : ""}<button type="submit" class="primary">Guardar cambios</button></div>`;
 const enumOptions = (list, doneLabel = labels.done) =>
@@ -1290,8 +1300,8 @@ function openEntity(collection, entityId) {
         true,
         'required maxlength="160"',
       ) +
-      personSelect(
-        existing ? v.personId : cloud.limited ? cloud.member.personId : null,
+      peopleChoices(
+        existing || { personId: cloud.limited ? cloud.member.personId : null },
       ) +
       choices(
         "Prioridad",
@@ -1328,8 +1338,8 @@ function openEntity(collection, entityId) {
         true,
         'maxlength="160"',
       ) +
-      personSelect(
-        existing ? v.personId : cloud.limited ? cloud.member.personId : null,
+      peopleChoices(
+        existing || { personId: cloud.limited ? cloud.member.personId : null },
       ) +
       field("Lugar", "location", v.location, "text", true, 'maxlength="160"') +
       choices(
@@ -1503,7 +1513,7 @@ function exportAgenda() {
       .sort(byStart)
       .map(
         (a) =>
-          `${a.start}–${a.end || a.endNote || "por definir"} | ${a.title}\n${[a.location, personMeta(a.personId), a.description].filter(Boolean).join(" · ")}`,
+          `${a.start}–${a.end || a.endNote || "por definir"} | ${a.title}\n${[a.location, responsibleMeta(a), a.description].filter(Boolean).join(" · ")}`,
       ),
   ].join("\n\n");
   modal(
@@ -1535,7 +1545,7 @@ function printAgenda() {
       .sort(byStart)
       .map(
         (a) =>
-          `<article><h2>${a.start}–${esc(a.end || a.endNote || "por definir")} · ${esc(a.title)}</h2><p>${esc([a.location, personMeta(a.personId)].filter(Boolean).join(" · "))}</p><p>${esc(a.description)}</p></article>`,
+          `<article><h2>${a.start}–${esc(a.end || a.endNote || "por definir")} · ${esc(a.title)}</h2><p>${esc([a.location, responsibleMeta(a)].filter(Boolean).join(" · "))}</p><p>${esc(a.description)}</p></article>`,
       )
       .join("")}</body></html>`,
   );
@@ -1779,7 +1789,23 @@ async function persistForm(form) {
         id: entityId || (form.dataset.recordId ||= id()),
         ...raw,
       };
-      if (["tasks", "agenda", "contingencies"].includes(collection))
+      if (["tasks", "agenda"].includes(collection)) {
+        const original = state[collection].find((row) => row.id === entityId),
+          checked = fd.getAll("personIds"),
+          previous = responsibleIds(original);
+        const selected = [
+          ...previous.filter((pid) => checked.includes(pid)),
+          ...checked.filter((pid) => !previous.includes(pid)),
+        ];
+        if (
+          !original ||
+          original.personIds !== undefined ||
+          !equal(selected, previous)
+        )
+          value.personIds = selected;
+        else delete value.personIds;
+        value.personId = selected[0] ?? null;
+      } else if (collection === "contingencies")
         value.personId = raw.personId || null;
       if (collection === "agenda") value.end = raw.end || null;
       if (collection === "guests") {

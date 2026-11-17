@@ -33,6 +33,29 @@ const time = (x) =>
   typeof x === "string" && /^([01]\d|2[0-3]):[0-5]\d$/.test(x);
 const nullableId = (value, collection) =>
   value === null || collection.some((x) => x.id === value);
+export const responsibleIds = (record) =>
+  record?.personIds === undefined
+    ? record?.personId
+      ? [record.personId]
+      : []
+    : [...record.personIds];
+export const assignedTo = (record, personId) =>
+  !!personId && responsibleIds(record).includes(personId);
+function validResponsibles(record, people) {
+  if (!nullableId(record.personId, people)) return false;
+  if (record.personIds === undefined) return true;
+  return (
+    Array.isArray(record.personIds) &&
+    record.personIds.length <= people.length &&
+    new Set(record.personIds).size === record.personIds.length &&
+    record.personIds.every(
+      (value) =>
+        typeof value === "string" &&
+        people.some((person) => person.id === value),
+    ) &&
+    record.personId === (record.personIds[0] ?? null)
+  );
+}
 const date = (x) =>
   x === "" ||
   (typeof x === "string" &&
@@ -277,7 +300,7 @@ export function validate(s) {
         text(a.description) &&
         text(a.location, 160) &&
         text(a.notes) &&
-        nullableId(a.personId, s.people) &&
+        validResponsibles(a, s.people) &&
         ["pending", "active", "done"].includes(a.status),
       "Actividad inválida: revisa horas y responsable.",
     );
@@ -285,7 +308,7 @@ export function validate(s) {
     check(
       nonempty(t.title) &&
         text(t.description) &&
-        nullableId(t.personId, s.people) &&
+        validResponsibles(t, s.people) &&
         ["normal", "urgent"].includes(t.priority) &&
         ["pending", "doing", "done"].includes(t.status) &&
         date(t.due),
@@ -448,9 +471,17 @@ export function mutate(s, action) {
       n.assignments = n.assignments.filter((a) => a.tableId !== action.id);
     if (action.collection === "vendors")
       n.payments = n.payments.filter((p) => p.vendorId !== action.id);
-    if (action.collection === "people")
-      for (const list of [n.agenda, n.tasks, n.contingencies])
-        for (const x of list) if (x.personId === action.id) x.personId = null;
+    if (action.collection === "people") {
+      for (const list of [n.agenda, n.tasks])
+        for (const x of list) {
+          if (x.personIds !== undefined) {
+            x.personIds = x.personIds.filter((pid) => pid !== action.id);
+            x.personId = x.personIds[0] ?? null;
+          } else if (x.personId === action.id) x.personId = null;
+        }
+      for (const plan of n.contingencies)
+        if (plan.personId === action.id) plan.personId = null;
+    }
   } else if (type === "guestUpdate") {
     const i = n.guests.findIndex((g) => g.id === action.value.id);
     check(i >= 0, "El invitado ya no existe.");
